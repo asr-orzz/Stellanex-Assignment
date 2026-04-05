@@ -23,7 +23,22 @@ pip install -e .[dev]
 python -m stellanex_telemetry
 ```
 
-The application is currently in bootstrap mode. Later commits will add the ingestion pipeline, fleet analytics, anomaly detection, and the desktop UI.
+The application currently bootstraps its shared project paths and runtime folders before later commits add ingestion, analytics, anomaly detection, and the desktop UI.
+
+### Runtime Layout
+
+The application resolves paths from the repository root and uses the following layout:
+
+- `data/demo/`: deterministic bundled datasets for local development and demos.
+- `data/imports/`: operator-provided CSV drops that will be parsed by the ingestion layer.
+- `data/runtime/`: generated runtime artifacts such as exports, caches, and logs.
+
+You can override the defaults with environment variables when needed:
+
+```bash
+set STELLANEX_DATA_DIR=C:\path\to\data
+set STELLANEX_RUNTIME_DIR=C:\path\to\runtime
+```
 
 ## Technical Architecture
 
@@ -43,4 +58,3 @@ To satisfy the assessment's GitHub workflow requirement, implementation will be 
 ## Critical Reflection
 
 The biggest product uncertainty at the outset is how much analytical sophistication is needed for the MVP. A simple threshold-driven alerting engine is easier to reason about and explain in an interview, while a richer anomaly detector may better capture subtle failures. The plan is to start with transparent rules and then layer in bounded anomaly detection so the trade-off remains explicit.
-
