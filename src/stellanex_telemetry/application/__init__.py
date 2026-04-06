@@ -23,6 +23,12 @@ from stellanex_telemetry.application.fleet_health import (
     RegionHealthSnapshot,
     StationHealthSnapshot,
 )
+from stellanex_telemetry.application.operator_insights import (
+    InsightNarrative,
+    OperatorInsightService,
+    OperatorRecommendation,
+    StationInsightReport,
+)
 from stellanex_telemetry.application.station_detail import (
     StationAlertSummary,
     StationDetailQuery,
@@ -41,6 +47,9 @@ __all__ = [
     "IngestionBatch",
     "IngestionIssue",
     "IngestionSummary",
+    "InsightNarrative",
+    "OperatorInsightService",
+    "OperatorRecommendation",
     "RegionHealthSnapshot",
     "StationQuery",
     "StationRepository",
@@ -49,6 +58,7 @@ __all__ = [
     "StationDetailQueryService",
     "StationDetailResult",
     "StationHealthSnapshot",
+    "StationInsightReport",
     "StationMetricSummary",
     "StationTelemetryPoint",
     "TelemetryAnomalyConfig",

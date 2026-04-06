@@ -5,6 +5,7 @@ from tkinter import TclError
 from stellanex_telemetry.application import (
     FleetHealthAggregator,
     IngestionIssue,
+    OperatorInsightService,
     StationDetailQueryService,
     ThresholdAlertPolicyEngine,
     TelemetryAnomalyDetector,
@@ -43,6 +44,7 @@ def build_desktop_context(config: AppConfig) -> DesktopShellContext:
     alert_engine = ThresholdAlertPolicyEngine()
     anomaly_detector = TelemetryAnomalyDetector()
     health_aggregator = FleetHealthAggregator(alert_engine=alert_engine)
+    insight_service = OperatorInsightService()
     station_detail_service = StationDetailQueryService(
         alert_engine=alert_engine,
         anomaly_detector=anomaly_detector,
@@ -55,6 +57,7 @@ def build_desktop_context(config: AppConfig) -> DesktopShellContext:
         alert_engine=alert_engine,
         anomaly_detector=anomaly_detector,
         health_aggregator=health_aggregator,
+        insight_service=insight_service,
         station_detail_service=station_detail_service,
     )
 

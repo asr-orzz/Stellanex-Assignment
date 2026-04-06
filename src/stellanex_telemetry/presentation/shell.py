@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from stellanex_telemetry.application import (
     FleetHealthAggregator,
     FleetHealthSnapshot,
+    OperatorInsightService,
+    StationDetailResult,
     StationDetailQuery,
     StationDetailQueryService,
     TelemetryQuery,
@@ -25,6 +27,12 @@ from stellanex_telemetry.presentation.history_charts import (
     MetricHistoryChartViewModel,
     StationHistoryDashboardViewModel,
     build_station_history_dashboard_view_model,
+)
+from stellanex_telemetry.presentation.insight_panel import (
+    InsightNarrativeViewModel,
+    RecommendationItemViewModel,
+    StationInsightPanelViewModel,
+    build_station_insight_panel_view_model,
 )
 from stellanex_telemetry.presentation.station_explorer import (
     StationExplorerRowViewModel,
@@ -50,6 +58,7 @@ class DesktopShellContext:
     alert_engine: ThresholdAlertPolicyEngine
     anomaly_detector: TelemetryAnomalyDetector
     health_aggregator: FleetHealthAggregator
+    insight_service: OperatorInsightService
     station_detail_service: StationDetailQueryService
 
 
@@ -88,13 +97,18 @@ class TelemetryDesktopShell(tk.Tk):
         self._signal_canvas: tk.Canvas | None = None
         self._explorer_tree: ttk.Treeview | None = None
         self._explorer_preview_host: tk.Frame | None = None
+        self._history_content_canvas: tk.Canvas | None = None
+        self._history_content_frame: tk.Frame | None = None
+        self._history_content_window_id: int | None = None
         self._history_dashboard_host: tk.Frame | None = None
         self._explorer_summary_label: tk.Label | None = None
         self._explorer_sort_label: tk.Label | None = None
         self._explorer_rows_by_id: dict[str, StationExplorerRowViewModel] = {
             row.station_id: row for row in self._station_explorer_view_model.rows
         }
+        self._station_detail_cache: dict[str, StationDetailResult] = {}
         self._station_history_cache: dict[str, StationHistoryDashboardViewModel] = {}
+        self._station_insight_cache: dict[str, StationInsightPanelViewModel] = {}
         self._explorer_selected_station_id = (
             self._station_explorer_view_model.rows[0].station_id
             if self._station_explorer_view_model.rows
@@ -622,11 +636,11 @@ class TelemetryDesktopShell(tk.Tk):
         header.pack(fill="x")
         pills = tk.Frame(header, bg=theme.palette.surface)
         pills.pack(anchor="w")
-        theme.pill(pills, text="STAGE 3 LIVE", tone="signal").pack(side="left", padx=(0, spacing.sm))
-        theme.pill(pills, text="SELECTED STATION HISTORY", tone="accent").pack(side="left")
+        theme.pill(pills, text="STAGE 5 LIVE", tone="signal").pack(side="left", padx=(0, spacing.sm))
+        theme.pill(pills, text="TREND + INSIGHT", tone="accent").pack(side="left")
         theme.label(
             header,
-            text="Trend Signal Deck",
+            text="Trend Insight Deck",
             role="section_title",
             tone="primary",
             background=theme.palette.surface,
@@ -634,8 +648,8 @@ class TelemetryDesktopShell(tk.Tk):
         theme.label(
             header,
             text=(
-                "The charts follow the station currently selected in the explorer, showing the last 48 telemetry points "
-                "for voltage, load, and temperature with configured operating bounds layered in."
+                "The deck follows the station currently selected in the explorer, combining telemetry charts with "
+                "operator-ready narratives and recommended next actions."
             ),
             role="body",
             tone="muted",
@@ -645,13 +659,47 @@ class TelemetryDesktopShell(tk.Tk):
 
         host_shell = theme.panel(body, tone="surface_alt")
         host_shell.pack(fill="both", expand=True, pady=(spacing.md, 0))
-        self._history_dashboard_host = tk.Frame(host_shell, bg=theme.palette.surface_alt)
+        host_shell.grid_rowconfigure(0, weight=1)
+        host_shell.grid_columnconfigure(0, weight=1)
+        self._history_content_canvas = tk.Canvas(
+            host_shell,
+            bg=theme.palette.surface_alt,
+            highlightthickness=0,
+            bd=0,
+        )
+        self._history_content_canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar = ttk.Scrollbar(
+            host_shell,
+            orient="vertical",
+            command=self._history_content_canvas.yview,
+            style="Telemetry.Vertical.TScrollbar",
+        )
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        self._history_content_canvas.configure(yscrollcommand=scrollbar.set)
+
+        self._history_content_frame = tk.Frame(self._history_content_canvas, bg=theme.palette.surface_alt)
+        self._history_content_window_id = self._history_content_canvas.create_window(
+            (0, 0),
+            window=self._history_content_frame,
+            anchor="nw",
+        )
+        self._history_content_frame.bind("<Configure>", self._on_history_content_configure)
+        self._history_content_canvas.bind("<Configure>", self._on_history_canvas_configure)
+
+        self._history_dashboard_host = tk.Frame(self._history_content_frame, bg=theme.palette.surface_alt)
         self._history_dashboard_host.pack(fill="both", expand=True, padx=spacing.md, pady=spacing.md)
 
-        self._render_history_dashboard(self._resolve_selected_history_dashboard())
+        self._render_history_dashboard(
+            self._resolve_selected_history_dashboard(),
+            self._resolve_selected_insight_panel(),
+        )
         return panel
 
-    def _render_history_dashboard(self, dashboard: StationHistoryDashboardViewModel | None) -> None:
+    def _render_history_dashboard(
+        self,
+        dashboard: StationHistoryDashboardViewModel | None,
+        insight_panel: StationInsightPanelViewModel | None,
+    ) -> None:
         if self._history_dashboard_host is None:
             return
 
@@ -663,14 +711,14 @@ class TelemetryDesktopShell(tk.Tk):
         if dashboard is None:
             theme.label(
                 self._history_dashboard_host,
-                text="Trend Signal Deck",
+                text="Trend Insight Deck",
                 role="card_title",
                 tone="primary",
                 background=theme.palette.surface_alt,
             ).pack(anchor="w")
             theme.label(
                 self._history_dashboard_host,
-                text="Select a station in the explorer to render its recent voltage, load, and temperature history.",
+                text="Select a station in the explorer to render its recent telemetry, narratives, and operator recommendations.",
                 role="body",
                 tone="muted",
                 background=theme.palette.surface_alt,
@@ -722,9 +770,149 @@ class TelemetryDesktopShell(tk.Tk):
             wraplength=420,
         ).pack(anchor="w", pady=(spacing.xs, spacing.md))
 
+        self._render_insight_panel(self._history_dashboard_host, insight_panel)
+        if insight_panel is not None:
+            theme.divider(self._history_dashboard_host, tone="soft").pack(fill="x", pady=spacing.md)
+
         for index, chart_view in enumerate(dashboard.charts):
             card = self._build_history_chart_card(self._history_dashboard_host, chart_view)
             card.pack(fill="x", pady=(0, spacing.sm if index < len(dashboard.charts) - 1 else 0))
+
+    def _render_insight_panel(
+        self,
+        master: tk.Misc,
+        insight_panel: StationInsightPanelViewModel | None,
+    ) -> None:
+        if insight_panel is None:
+            return
+
+        theme = self._theme
+        spacing = theme.spacing
+
+        summary_card = theme.panel(master, tone="surface")
+        summary_body = tk.Frame(summary_card, bg=theme.palette.surface)
+        summary_body.pack(fill="both", expand=True, padx=spacing.md, pady=spacing.md)
+        header = tk.Frame(summary_body, bg=theme.palette.surface)
+        header.pack(fill="x")
+        theme.pill(header, text="OPERATOR BRIEF", tone=insight_panel.summary_tone).pack(side="left")
+        theme.label(
+            header,
+            text="Insight service",
+            role="caption",
+            tone="muted",
+            background=theme.palette.surface,
+        ).pack(side="right")
+        theme.label(
+            summary_body,
+            text=insight_panel.summary_title,
+            role="card_title",
+            tone="primary",
+            background=theme.palette.surface,
+        ).pack(anchor="w", pady=(spacing.sm, spacing.xs))
+        theme.label(
+            summary_body,
+            text=insight_panel.summary_body,
+            role="body",
+            tone="primary",
+            background=theme.palette.surface,
+            wraplength=420,
+        ).pack(anchor="w")
+        summary_card.pack(fill="x")
+
+        sections = tk.Frame(master, bg=theme.palette.surface_alt)
+        sections.pack(fill="x", pady=(spacing.md, spacing.md))
+        sections.grid_columnconfigure(0, weight=1)
+        sections.grid_columnconfigure(1, weight=1)
+
+        narrative_card = self._build_narrative_stack(sections, insight_panel.narratives)
+        narrative_card.grid(row=0, column=0, sticky="nsew", padx=(0, spacing.sm))
+        recommendation_card = self._build_recommendation_stack(sections, insight_panel.recommendations)
+        recommendation_card.grid(row=0, column=1, sticky="nsew")
+
+    def _build_narrative_stack(
+        self,
+        master: tk.Misc,
+        narratives: tuple[InsightNarrativeViewModel, ...],
+    ) -> tk.Frame:
+        theme = self._theme
+        spacing = theme.spacing
+
+        card = theme.panel(master, tone="surface")
+        body = tk.Frame(card, bg=theme.palette.surface)
+        body.pack(fill="both", expand=True, padx=spacing.md, pady=spacing.md)
+        theme.label(
+            body,
+            text="Trend Narratives",
+            role="card_title",
+            tone="primary",
+            background=theme.palette.surface,
+        ).pack(anchor="w")
+
+        for index, narrative in enumerate(narratives):
+            item = tk.Frame(body, bg=theme.palette.surface)
+            item.pack(fill="x", pady=(spacing.sm if index == 0 else spacing.xs, 0))
+            theme.pill(item, text=narrative.title.upper(), tone=narrative.tone).pack(anchor="w")
+            theme.label(
+                item,
+                text=narrative.detail,
+                role="body",
+                tone="primary",
+                background=theme.palette.surface,
+                wraplength=180,
+            ).pack(anchor="w", pady=(spacing.xs, 0))
+        return card
+
+    def _build_recommendation_stack(
+        self,
+        master: tk.Misc,
+        recommendations: tuple[RecommendationItemViewModel, ...],
+    ) -> tk.Frame:
+        theme = self._theme
+        spacing = theme.spacing
+
+        card = theme.panel(master, tone="surface")
+        body = tk.Frame(card, bg=theme.palette.surface)
+        body.pack(fill="both", expand=True, padx=spacing.md, pady=spacing.md)
+        theme.label(
+            body,
+            text="Recommended Actions",
+            role="card_title",
+            tone="primary",
+            background=theme.palette.surface,
+        ).pack(anchor="w")
+
+        for index, recommendation in enumerate(recommendations):
+            item = tk.Frame(body, bg=theme.palette.surface)
+            item.pack(fill="x", pady=(spacing.sm if index == 0 else spacing.xs, 0))
+            top = tk.Frame(item, bg=theme.palette.surface)
+            top.pack(fill="x")
+            theme.pill(top, text=recommendation.priority_label.upper(), tone=recommendation.tone).pack(side="left", padx=(0, spacing.xs))
+            theme.label(
+                top,
+                text=recommendation.title,
+                role="body_strong",
+                tone="primary",
+                background=theme.palette.surface,
+            ).pack(side="left")
+            theme.label(
+                item,
+                text=recommendation.detail,
+                role="body",
+                tone="primary",
+                background=theme.palette.surface,
+                wraplength=180,
+            ).pack(anchor="w", pady=(spacing.xs, 0))
+        return card
+
+    def _on_history_content_configure(self, _: tk.Event[tk.Misc]) -> None:
+        if self._history_content_canvas is None:
+            return
+        self._history_content_canvas.configure(scrollregion=self._history_content_canvas.bbox("all"))
+
+    def _on_history_canvas_configure(self, event: tk.Event[tk.Misc]) -> None:
+        if self._history_content_canvas is None or self._history_content_window_id is None:
+            return
+        self._history_content_canvas.itemconfigure(self._history_content_window_id, width=event.width)
 
     def _build_history_chart_card(self, master: tk.Misc, chart_view: MetricHistoryChartViewModel) -> tk.Frame:
         theme = self._theme
@@ -1336,7 +1524,10 @@ class TelemetryDesktopShell(tk.Tk):
             else None
         )
         self._render_station_explorer_preview(selected_row)
-        self._render_history_dashboard(self._resolve_selected_history_dashboard())
+        self._render_history_dashboard(
+            self._resolve_selected_history_dashboard(),
+            self._resolve_selected_insight_panel(),
+        )
 
     def _resolve_selected_history_dashboard(self) -> StationHistoryDashboardViewModel | None:
         if self._explorer_selected_station_id is None:
@@ -1346,14 +1537,37 @@ class TelemetryDesktopShell(tk.Tk):
         if cached is not None:
             return cached
 
-        detail = self._context.station_detail_service.get_station_detail(
-            self._context.station_repository,
-            self._context.telemetry_repository,
-            StationDetailQuery(station_id=self._explorer_selected_station_id),
-        )
+        detail = self._resolve_station_detail(self._explorer_selected_station_id)
         dashboard = build_station_history_dashboard_view_model(detail)
         self._station_history_cache[self._explorer_selected_station_id] = dashboard
         return dashboard
+
+    def _resolve_selected_insight_panel(self) -> StationInsightPanelViewModel | None:
+        if self._explorer_selected_station_id is None:
+            return None
+
+        cached = self._station_insight_cache.get(self._explorer_selected_station_id)
+        if cached is not None:
+            return cached
+
+        detail = self._resolve_station_detail(self._explorer_selected_station_id)
+        report = self._context.insight_service.build_report(detail)
+        panel = build_station_insight_panel_view_model(report)
+        self._station_insight_cache[self._explorer_selected_station_id] = panel
+        return panel
+
+    def _resolve_station_detail(self, station_id: str) -> StationDetailResult:
+        cached = self._station_detail_cache.get(station_id)
+        if cached is not None:
+            return cached
+
+        detail = self._context.station_detail_service.get_station_detail(
+            self._context.station_repository,
+            self._context.telemetry_repository,
+            StationDetailQuery(station_id=station_id),
+        )
+        self._station_detail_cache[station_id] = detail
+        return detail
 
     def _build_stat_chip(self, master: tk.Misc, label: str, value: str) -> None:
         theme = self._theme
