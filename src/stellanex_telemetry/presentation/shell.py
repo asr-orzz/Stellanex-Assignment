@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tkinter as tk
+from tkinter import ttk
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -14,6 +15,12 @@ from stellanex_telemetry.application import (
 )
 from stellanex_telemetry.application.contracts import StationRepository, TelemetryRepository
 from stellanex_telemetry.config import AppConfig
+from stellanex_telemetry.presentation.station_explorer import (
+    StationExplorerRowViewModel,
+    build_station_explorer_view_model,
+    filter_station_explorer_rows,
+    sort_station_explorer_rows,
+)
 from stellanex_telemetry.presentation.theme import DesktopTheme, build_desktop_theme
 from stellanex_telemetry.presentation.view_models import (
     FleetKpiViewModel,
@@ -58,19 +65,111 @@ class TelemetryDesktopShell(tk.Tk):
             self._fleet_snapshot,
             anomaly_alerts=self._anomaly_alerts,
         )
+        self._station_explorer_view_model = build_station_explorer_view_model(
+            self._fleet_snapshot,
+            anomaly_alerts=self._anomaly_alerts,
+        )
         self._section_hosts: dict[str, tk.Misc] = {}
         self._signal_canvas: tk.Canvas | None = None
+        self._explorer_tree: ttk.Treeview | None = None
+        self._explorer_preview_host: tk.Frame | None = None
+        self._explorer_summary_label: tk.Label | None = None
+        self._explorer_sort_label: tk.Label | None = None
+        self._explorer_rows_by_id: dict[str, StationExplorerRowViewModel] = {
+            row.station_id: row for row in self._station_explorer_view_model.rows
+        }
+        self._explorer_selected_station_id = (
+            self._station_explorer_view_model.rows[0].station_id
+            if self._station_explorer_view_model.rows
+            else None
+        )
+        self._explorer_sort_key = "priority"
+        self._explorer_sort_descending = False
+        self._explorer_search_var = tk.StringVar(self, "")
+        self._explorer_region_var = tk.StringVar(self, "All regions")
+        self._explorer_status_var = tk.StringVar(self, "All statuses")
+        self._explorer_priority_only_var = tk.BooleanVar(self, False)
 
         self.title(context.config.app_name)
         self.geometry("1460x920")
         self.minsize(1240, 820)
 
+        self._configure_ttk_styles()
+        self._bind_station_explorer_state()
         self._build_shell()
         self.bind("<Configure>", self._on_resize)
 
     @property
     def fleet_snapshot(self) -> FleetHealthSnapshot:
         return self._fleet_snapshot
+
+    def _configure_ttk_styles(self) -> None:
+        theme = self._theme
+        style = ttk.Style(self)
+        if "clam" in style.theme_names():
+            style.theme_use("clam")
+
+        style.configure(
+            "Telemetry.Treeview",
+            background=theme.palette.surface,
+            fieldbackground=theme.palette.surface,
+            foreground=theme.palette.text_primary,
+            bordercolor=theme.palette.border,
+            borderwidth=0,
+            rowheight=30,
+            relief="flat",
+            font=theme.typography.body,
+        )
+        style.map(
+            "Telemetry.Treeview",
+            background=[("selected", theme.palette.accent_soft)],
+            foreground=[("selected", theme.palette.text_primary)],
+        )
+        style.configure(
+            "Telemetry.Treeview.Heading",
+            background=theme.palette.surface_alt,
+            foreground=theme.palette.text_primary,
+            bordercolor=theme.palette.border,
+            relief="flat",
+            font=theme.typography.body_strong,
+            padding=(10, 8),
+        )
+        style.map(
+            "Telemetry.Treeview.Heading",
+            background=[("active", theme.palette.accent_soft)],
+        )
+        style.configure(
+            "Telemetry.Vertical.TScrollbar",
+            background=theme.palette.surface_alt,
+            troughcolor=theme.palette.surface,
+            bordercolor=theme.palette.border,
+            arrowcolor=theme.palette.text_primary,
+            relief="flat",
+        )
+        style.configure(
+            "Telemetry.TCombobox",
+            fieldbackground=theme.palette.surface,
+            background=theme.palette.surface,
+            foreground=theme.palette.text_primary,
+            bordercolor=theme.palette.border,
+            lightcolor=theme.palette.border,
+            darkcolor=theme.palette.border,
+            arrowcolor=theme.palette.accent,
+            relief="flat",
+            padding=6,
+        )
+        style.map(
+            "Telemetry.TCombobox",
+            fieldbackground=[("readonly", theme.palette.surface)],
+            selectbackground=[("readonly", theme.palette.accent_soft)],
+            selectforeground=[("readonly", theme.palette.text_primary)],
+        )
+
+    def _bind_station_explorer_state(self) -> None:
+        self._explorer_search_var.trace_add("write", self._on_station_explorer_filters_changed)
+        self._explorer_region_var.trace_add("write", self._on_station_explorer_filters_changed)
+        self._explorer_status_var.trace_add("write", self._on_station_explorer_filters_changed)
+        self._explorer_priority_only_var.trace_add("write", self._on_station_explorer_filters_changed)
 
     def _build_shell(self) -> None:
         theme = self._theme
@@ -233,7 +332,7 @@ class TelemetryDesktopShell(tk.Tk):
         theme.divider(content).pack(fill="x", pady=spacing.md)
         theme.label(
             content,
-            text="Upcoming build order: overview widgets, station explorer, charts, alert stream, then narrative insights.",
+            text="Live modules: overview and station explorer. Next build order: charts, alert stream, then narrative insights.",
             role="body",
             tone="muted",
             background=theme.palette.surface_alt,
@@ -251,7 +350,7 @@ class TelemetryDesktopShell(tk.Tk):
         inbox_host = self._create_placeholder_panel(
             master,
             title="Signal Inbox",
-            eyebrow="STAGE 2",
+            eyebrow="STAGE 3",
             description=(
                 "This rail is reserved for active alerts and operator context. Right now it mirrors which "
                 "stations would be surfaced first once the alert widgets land."
@@ -261,16 +360,7 @@ class TelemetryDesktopShell(tk.Tk):
         inbox_host.grid(row=0, column=1, sticky="nsew", pady=(0, spacing.md))
         self._section_hosts["alerts"] = inbox_host
 
-        explorer_host = self._create_placeholder_panel(
-            master,
-            title="Station Explorer Bay",
-            eyebrow="STAGE 3",
-            description=(
-                "Search, region filters, and sortable station tables will mount here next. The shell layout "
-                "already reserves a wide pane so the explorer can coexist with the analytics views."
-            ),
-            footnote="Reserved for commit 15: station explorer with filters and sort controls.",
-        )
+        explorer_host = self._build_station_explorer_panel(master)
         explorer_host.grid(row=1, column=0, sticky="nsew", padx=(0, spacing.md))
         self._section_hosts["explorer"] = explorer_host
 
@@ -342,6 +432,112 @@ class TelemetryDesktopShell(tk.Tk):
         self._build_priority_watchlist(priority)
         return panel
 
+    def _build_station_explorer_panel(self, master: tk.Misc) -> tk.Frame:
+        theme = self._theme
+        spacing = theme.spacing
+
+        panel = theme.panel(master, tone="surface")
+        body = tk.Frame(panel, bg=theme.palette.surface)
+        body.pack(fill="both", expand=True, padx=spacing.lg, pady=spacing.lg)
+
+        header = tk.Frame(body, bg=theme.palette.surface)
+        header.pack(fill="x")
+        pills = tk.Frame(header, bg=theme.palette.surface)
+        pills.pack(anchor="w")
+        theme.pill(pills, text="STAGE 2 LIVE", tone="signal").pack(side="left", padx=(0, spacing.sm))
+        theme.pill(pills, text="INDEXED CATALOG", tone="accent").pack(side="left")
+        theme.label(
+            header,
+            text="Station Explorer Bay",
+            role="section_title",
+            tone="primary",
+            background=theme.palette.surface,
+        ).pack(anchor="w", pady=(spacing.sm, spacing.xs))
+        theme.label(
+            header,
+            text=(
+                "Search the station catalog, filter by region and operating state, and reorder live telemetry rows "
+                "to spot stale feeds or high-stress sites quickly. "
+                f"{self._station_explorer_view_model.summary_text}."
+            ),
+            role="body",
+            tone="muted",
+            background=theme.palette.surface,
+            wraplength=760,
+        ).pack(anchor="w")
+
+        controls = theme.panel(body, tone="surface_alt")
+        controls.pack(fill="x", pady=(spacing.md, 0))
+        controls_body = tk.Frame(controls, bg=theme.palette.surface_alt)
+        controls_body.pack(fill="x", padx=spacing.md, pady=spacing.md)
+        controls_body.grid_columnconfigure(0, weight=3)
+        controls_body.grid_columnconfigure(1, weight=1)
+        controls_body.grid_columnconfigure(2, weight=1)
+        controls_body.grid_columnconfigure(3, weight=0)
+        controls_body.grid_columnconfigure(4, weight=0)
+
+        self._build_search_control(controls_body).grid(row=0, column=0, sticky="ew", padx=(0, spacing.md))
+        self._build_region_filter_control(controls_body).grid(row=0, column=1, sticky="ew", padx=(0, spacing.md))
+        self._build_status_filter_control(controls_body).grid(row=0, column=2, sticky="ew", padx=(0, spacing.md))
+        self._build_priority_toggle_control(controls_body).grid(row=0, column=3, sticky="ew", padx=(0, spacing.md))
+        self._build_reset_button(controls_body).grid(row=0, column=4, sticky="se")
+
+        summary_row = tk.Frame(body, bg=theme.palette.surface)
+        summary_row.pack(fill="x", pady=(spacing.md, spacing.sm))
+        self._explorer_summary_label = theme.label(
+            summary_row,
+            text="",
+            role="body_strong",
+            tone="primary",
+            background=theme.palette.surface,
+        )
+        self._explorer_summary_label.pack(side="left")
+        self._explorer_sort_label = theme.label(
+            summary_row,
+            text="",
+            role="caption",
+            tone="muted",
+            background=theme.palette.surface,
+        )
+        self._explorer_sort_label.pack(side="right")
+
+        table_shell = theme.panel(body, tone="surface_alt")
+        table_shell.pack(fill="both", expand=True)
+        table_body = tk.Frame(table_shell, bg=theme.palette.surface_alt)
+        table_body.pack(fill="both", expand=True, padx=spacing.sm, pady=spacing.sm)
+        table_body.grid_rowconfigure(0, weight=1)
+        table_body.grid_columnconfigure(0, weight=1)
+
+        columns = ("station", "region", "status", "health", "updated", "load", "temperature", "signals")
+        tree = ttk.Treeview(
+            table_body,
+            columns=columns,
+            show="headings",
+            selectmode="browse",
+            style="Telemetry.Treeview",
+        )
+        tree.grid(row=0, column=0, sticky="nsew")
+        tree.bind("<<TreeviewSelect>>", self._on_station_explorer_select)
+        self._configure_station_explorer_columns(tree)
+        self._explorer_tree = tree
+
+        scrollbar = ttk.Scrollbar(
+            table_body,
+            orient="vertical",
+            command=tree.yview,
+            style="Telemetry.Vertical.TScrollbar",
+        )
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        tree.configure(yscrollcommand=scrollbar.set)
+
+        preview = theme.panel(body, tone="surface_alt")
+        preview.pack(fill="x", pady=(spacing.sm, 0))
+        self._explorer_preview_host = tk.Frame(preview, bg=theme.palette.surface_alt)
+        self._explorer_preview_host.pack(fill="both", expand=True, padx=spacing.md, pady=spacing.md)
+
+        self._refresh_station_explorer()
+        return panel
+
     def _create_placeholder_panel(
         self,
         master: tk.Misc,
@@ -387,6 +583,357 @@ class TelemetryDesktopShell(tk.Tk):
             wraplength=420,
         ).pack(anchor="w")
         return panel
+
+    def _build_search_control(self, master: tk.Misc) -> tk.Frame:
+        theme = self._theme
+        spacing = theme.spacing
+
+        shell = tk.Frame(master, bg=theme.palette.surface_alt)
+        theme.label(
+            shell,
+            text="Search",
+            role="caption",
+            tone="muted",
+            background=theme.palette.surface_alt,
+        ).pack(anchor="w", pady=(0, spacing.xs))
+
+        input_shell = tk.Frame(
+            shell,
+            bg=theme.palette.surface,
+            highlightthickness=1,
+            highlightbackground=theme.palette.border,
+        )
+        input_shell.pack(fill="x")
+        entry = tk.Entry(
+            input_shell,
+            textvariable=self._explorer_search_var,
+            relief="flat",
+            bd=0,
+            bg=theme.palette.surface,
+            fg=theme.palette.text_primary,
+            insertbackground=theme.palette.text_primary,
+            font=theme.typography.body,
+        )
+        entry.pack(fill="x", padx=spacing.md, pady=spacing.sm)
+        return shell
+
+    def _build_region_filter_control(self, master: tk.Misc) -> tk.Frame:
+        return self._build_combobox_control(
+            master,
+            label="Region",
+            variable=self._explorer_region_var,
+            values=("All regions", *self._station_explorer_view_model.region_options),
+        )
+
+    def _build_status_filter_control(self, master: tk.Misc) -> tk.Frame:
+        return self._build_combobox_control(
+            master,
+            label="Status",
+            variable=self._explorer_status_var,
+            values=("All statuses", *self._station_explorer_view_model.status_options),
+        )
+
+    def _build_combobox_control(
+        self,
+        master: tk.Misc,
+        *,
+        label: str,
+        variable: tk.StringVar,
+        values: tuple[str, ...],
+    ) -> tk.Frame:
+        theme = self._theme
+        spacing = theme.spacing
+
+        shell = tk.Frame(master, bg=theme.palette.surface_alt)
+        theme.label(
+            shell,
+            text=label,
+            role="caption",
+            tone="muted",
+            background=theme.palette.surface_alt,
+        ).pack(anchor="w", pady=(0, spacing.xs))
+
+        combobox = ttk.Combobox(
+            shell,
+            textvariable=variable,
+            values=values,
+            state="readonly",
+            style="Telemetry.TCombobox",
+        )
+        combobox.pack(fill="x")
+        return shell
+
+    def _build_priority_toggle_control(self, master: tk.Misc) -> tk.Frame:
+        theme = self._theme
+        spacing = theme.spacing
+
+        shell = tk.Frame(master, bg=theme.palette.surface_alt)
+        theme.label(
+            shell,
+            text="Focus",
+            role="caption",
+            tone="muted",
+            background=theme.palette.surface_alt,
+        ).pack(anchor="w", pady=(0, spacing.xs))
+        toggle = tk.Checkbutton(
+            shell,
+            text="Priority only",
+            variable=self._explorer_priority_only_var,
+            onvalue=True,
+            offvalue=False,
+            bg=theme.palette.surface_alt,
+            fg=theme.palette.text_primary,
+            activebackground=theme.palette.surface_alt,
+            activeforeground=theme.palette.text_primary,
+            selectcolor=theme.palette.surface,
+            bd=0,
+            highlightthickness=0,
+            font=theme.typography.body_strong,
+            anchor="w",
+        )
+        toggle.pack(anchor="w", pady=(spacing.sm, 0))
+        return shell
+
+    def _build_reset_button(self, master: tk.Misc) -> tk.Button:
+        theme = self._theme
+        spacing = theme.spacing
+
+        return tk.Button(
+            master,
+            text="Reset View",
+            command=self._reset_station_explorer_view,
+            font=theme.typography.body_strong,
+            fg=theme.palette.text_on_dark,
+            bg=theme.palette.surface_dark,
+            activeforeground=theme.palette.text_on_dark,
+            activebackground=theme.palette.accent,
+            relief="flat",
+            bd=0,
+            padx=spacing.md,
+            pady=spacing.sm,
+            cursor="arrow",
+        )
+
+    def _configure_station_explorer_columns(self, tree: ttk.Treeview) -> None:
+        columns = {
+            "station": ("Station", 220, self._sort_station_explorer_by),
+            "region": ("Region", 110, self._sort_station_explorer_by),
+            "status": ("Status", 100, self._sort_station_explorer_by),
+            "health": ("Score", 70, self._sort_station_explorer_by),
+            "updated": ("Last Updated", 135, self._sort_station_explorer_by),
+            "load": ("Load", 80, self._sort_station_explorer_by),
+            "temperature": ("Temp", 80, self._sort_station_explorer_by),
+            "signals": ("Signals", 95, self._sort_station_explorer_by),
+        }
+        for column_name, (title, width, callback) in columns.items():
+            tree.heading(column_name, text=title, command=lambda key=column_name: callback(key))
+            tree.column(column_name, width=width, minwidth=width - 10, anchor="w", stretch=column_name == "station")
+
+    def _refresh_station_explorer(self) -> None:
+        if self._explorer_tree is None:
+            return
+
+        rows = filter_station_explorer_rows(
+            self._station_explorer_view_model.rows,
+            search_text=self._explorer_search_var.get(),
+            region=self._explorer_region_var.get(),
+            status_label=self._explorer_status_var.get(),
+            priority_only=self._explorer_priority_only_var.get(),
+        )
+        rows = sort_station_explorer_rows(
+            rows,
+            sort_key=self._explorer_sort_key,
+            descending=self._explorer_sort_descending,
+        )
+        self._explorer_rows_by_id = {row.station_id: row for row in rows}
+
+        tree = self._explorer_tree
+        tree.delete(*tree.get_children())
+        for row in rows:
+            tree.insert(
+                "",
+                "end",
+                iid=row.station_id,
+                values=(
+                    row.title,
+                    row.region,
+                    row.status_label,
+                    row.health_score_text,
+                    row.last_updated_text,
+                    row.load_text,
+                    row.temperature_text,
+                    row.signal_text,
+                ),
+            )
+
+        selected_station_id = self._explorer_selected_station_id
+        if selected_station_id not in self._explorer_rows_by_id:
+            selected_station_id = rows[0].station_id if rows else None
+        self._explorer_selected_station_id = selected_station_id
+
+        if selected_station_id is not None:
+            tree.selection_set(selected_station_id)
+            tree.focus(selected_station_id)
+            tree.see(selected_station_id)
+
+        priority_count = sum(1 for row in rows if row.is_priority)
+        total_count = len(self._station_explorer_view_model.rows)
+        if self._explorer_summary_label is not None:
+            if rows:
+                self._explorer_summary_label.configure(
+                    text=f"{len(rows)} of {total_count} stations shown | {priority_count} priority in view"
+                )
+            else:
+                self._explorer_summary_label.configure(text="No stations match the current explorer filters.")
+
+        if self._explorer_sort_label is not None:
+            self._explorer_sort_label.configure(
+                text=(
+                    f"Sorted by {_sort_label(self._explorer_sort_key)} "
+                    f"({'descending' if self._explorer_sort_descending else 'ascending'}) | Click table headers to reorder"
+                )
+            )
+
+        self._render_station_explorer_preview(
+            self._explorer_rows_by_id.get(self._explorer_selected_station_id)
+            if self._explorer_selected_station_id is not None
+            else None
+        )
+
+    def _render_station_explorer_preview(self, row: StationExplorerRowViewModel | None) -> None:
+        if self._explorer_preview_host is None:
+            return
+
+        theme = self._theme
+        spacing = theme.spacing
+        for child in self._explorer_preview_host.winfo_children():
+            child.destroy()
+
+        if row is None:
+            theme.label(
+                self._explorer_preview_host,
+                text="Explorer Preview",
+                role="card_title",
+                tone="primary",
+                background=theme.palette.surface_alt,
+            ).pack(anchor="w")
+            theme.label(
+                self._explorer_preview_host,
+                text="Adjust the filters or search text to bring stations back into view.",
+                role="body",
+                tone="muted",
+                background=theme.palette.surface_alt,
+                wraplength=620,
+            ).pack(anchor="w", pady=(spacing.xs, 0))
+            return
+
+        header = tk.Frame(self._explorer_preview_host, bg=theme.palette.surface_alt)
+        header.pack(fill="x")
+        theme.pill(header, text=row.status_label.upper(), tone=row.status_tone).pack(side="left", padx=(0, spacing.sm))
+        theme.pill(header, text=row.signal_text.upper(), tone=_signal_tone(row)).pack(side="left")
+        theme.label(
+            header,
+            text=f"Rank #{row.priority_rank}",
+            role="caption",
+            tone="muted",
+            background=theme.palette.surface_alt,
+        ).pack(side="right")
+
+        theme.label(
+            self._explorer_preview_host,
+            text=row.title,
+            role="card_title",
+            tone="primary",
+            background=theme.palette.surface_alt,
+        ).pack(anchor="w", pady=(spacing.sm, 0))
+        theme.label(
+            self._explorer_preview_host,
+            text=f"{row.subtitle} | Quality {row.quality_label}",
+            role="body",
+            tone="muted",
+            background=theme.palette.surface_alt,
+        ).pack(anchor="w", pady=(spacing.xs, spacing.sm))
+
+        facts = tk.Frame(self._explorer_preview_host, bg=theme.palette.surface_alt)
+        facts.pack(fill="x")
+        self._build_preview_fact(facts, label="Health", value=row.health_score_text, tone=row.status_tone).pack(side="left", padx=(0, spacing.lg))
+        self._build_preview_fact(facts, label="Updated", value=row.last_updated_text, tone="signal").pack(side="left", padx=(0, spacing.lg))
+        self._build_preview_fact(
+            facts,
+            label="Metrics",
+            value=f"{row.voltage_text} | {row.load_text} | {row.temperature_text}",
+            tone="primary",
+        ).pack(side="left")
+
+        theme.divider(self._explorer_preview_host, tone="soft").pack(fill="x", pady=spacing.sm)
+        theme.label(
+            self._explorer_preview_host,
+            text=row.focus_text,
+            role="body",
+            tone="primary",
+            background=theme.palette.surface_alt,
+            wraplength=620,
+        ).pack(anchor="w")
+        theme.label(
+            self._explorer_preview_host,
+            text=f"Tags: {row.tags_text}",
+            role="caption",
+            tone="muted",
+            background=theme.palette.surface_alt,
+            wraplength=620,
+        ).pack(anchor="w", pady=(spacing.sm, 0))
+
+    def _build_preview_fact(self, master: tk.Misc, *, label: str, value: str, tone: str) -> tk.Frame:
+        theme = self._theme
+        spacing = theme.spacing
+
+        fact = tk.Frame(master, bg=theme.palette.surface_alt)
+        theme.label(
+            fact,
+            text=label.upper(),
+            role="caption",
+            tone=tone,
+            background=theme.palette.surface_alt,
+        ).pack(anchor="w")
+        theme.label(
+            fact,
+            text=value,
+            role="body_strong",
+            tone="primary",
+            background=theme.palette.surface_alt,
+        ).pack(anchor="w", pady=(spacing.xs, 0))
+        return fact
+
+    def _on_station_explorer_filters_changed(self, *_: str) -> None:
+        self._refresh_station_explorer()
+
+    def _on_station_explorer_select(self, _: tk.Event[tk.Misc]) -> None:
+        if self._explorer_tree is None:
+            return
+        selection = self._explorer_tree.selection()
+        self._explorer_selected_station_id = selection[0] if selection else None
+        self._render_station_explorer_preview(
+            self._explorer_rows_by_id.get(self._explorer_selected_station_id)
+            if self._explorer_selected_station_id is not None
+            else None
+        )
+
+    def _sort_station_explorer_by(self, sort_key: str) -> None:
+        if self._explorer_sort_key == sort_key:
+            self._explorer_sort_descending = not self._explorer_sort_descending
+        else:
+            self._explorer_sort_key = sort_key
+            self._explorer_sort_descending = _default_sort_direction(sort_key)
+        self._refresh_station_explorer()
+
+    def _reset_station_explorer_view(self) -> None:
+        self._explorer_search_var.set("")
+        self._explorer_region_var.set("All regions")
+        self._explorer_status_var.set("All statuses")
+        self._explorer_priority_only_var.set(False)
+        self._explorer_sort_key = "priority"
+        self._explorer_sort_descending = False
+        self._refresh_station_explorer()
 
     def _build_stat_chip(self, master: tk.Misc, label: str, value: str) -> None:
         theme = self._theme
@@ -685,3 +1232,30 @@ def _command_post_text(snapshot: FleetHealthSnapshot, *, anomaly_count: int) -> 
         f"{snapshot.warning_stations + snapshot.critical_stations} stations currently prioritized. "
         f"{threshold_text} {anomaly_text}"
     )
+
+
+def _default_sort_direction(sort_key: str) -> bool:
+    return sort_key in {"load", "temperature", "signals", "updated"}
+
+
+def _sort_label(sort_key: str) -> str:
+    labels = {
+        "priority": "priority ranking",
+        "station": "station name",
+        "region": "region",
+        "status": "status",
+        "health": "health score",
+        "updated": "last updated",
+        "load": "load",
+        "temperature": "temperature",
+        "signals": "signal count",
+    }
+    return labels.get(sort_key, sort_key)
+
+
+def _signal_tone(row: StationExplorerRowViewModel) -> str:
+    if row.signal_count > 0:
+        return row.status_tone if row.status_tone != "signal" else "warning"
+    if row.is_priority:
+        return row.status_tone
+    return "signal"
