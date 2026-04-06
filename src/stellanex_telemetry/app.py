@@ -3,6 +3,7 @@ from __future__ import annotations
 from tkinter import TclError
 
 from stellanex_telemetry.application import (
+    DatasetRuntime,
     FleetHealthAggregator,
     IngestionIssue,
     OperatorInsightService,
@@ -11,7 +12,7 @@ from stellanex_telemetry.application import (
     TelemetryAnomalyDetector,
 )
 from stellanex_telemetry.config import AppConfig, load_config
-from stellanex_telemetry.infrastructure import IndexedStationRepository, IndexedTelemetryRepository
+from stellanex_telemetry.infrastructure import RuntimeDatasetWorkspace
 from stellanex_telemetry.presentation import DesktopShellContext, launch_desktop_shell
 
 
@@ -30,16 +31,12 @@ def build_bootstrap_message(config: AppConfig, *, station_count: int, reading_co
 
 
 def build_desktop_context(config: AppConfig) -> DesktopShellContext:
-    issues: list[IngestionIssue] = []
-    station_repository = IndexedStationRepository.from_csv(
-        config.paths.demo_data_dir / "stations.csv",
-        issues=issues,
+    dataset_workspace = RuntimeDatasetWorkspace(
+        demo_data_dir=config.paths.demo_data_dir,
+        imports_dir=config.paths.imports_dir,
+        runtime_dir=config.paths.runtime_dir,
     )
-    telemetry_repository = IndexedTelemetryRepository.from_csv(
-        config.paths.demo_data_dir / "telemetry_readings.csv",
-        issues=issues,
-    )
-    _raise_for_bootstrap_issues(config, issues, station_repository.station_count, telemetry_repository.reading_count)
+    dataset_runtime = _load_initial_dataset(config, dataset_workspace.load_dataset("demo"))
 
     alert_engine = ThresholdAlertPolicyEngine()
     anomaly_detector = TelemetryAnomalyDetector()
@@ -52,14 +49,26 @@ def build_desktop_context(config: AppConfig) -> DesktopShellContext:
     )
     return DesktopShellContext(
         config=config,
-        station_repository=station_repository,
-        telemetry_repository=telemetry_repository,
+        dataset_workspace=dataset_workspace,
+        active_dataset_key=dataset_runtime.descriptor.dataset_key,
+        station_repository=dataset_runtime.station_repository,
+        telemetry_repository=dataset_runtime.telemetry_repository,
         alert_engine=alert_engine,
         anomaly_detector=anomaly_detector,
         health_aggregator=health_aggregator,
         insight_service=insight_service,
         station_detail_service=station_detail_service,
     )
+
+
+def _load_initial_dataset(config: AppConfig, dataset_runtime: DatasetRuntime) -> DatasetRuntime:
+    _raise_for_bootstrap_issues(
+        config,
+        list(dataset_runtime.issues),
+        _station_count(dataset_runtime.station_repository),
+        _reading_count(dataset_runtime.telemetry_repository),
+    )
+    return dataset_runtime
 
 
 def _raise_for_bootstrap_issues(
@@ -90,8 +99,26 @@ def main() -> None:
         print(
             build_bootstrap_message(
                 config,
-                station_count=context.station_repository.station_count,
-                reading_count=context.telemetry_repository.reading_count,
+                station_count=_station_count(context.station_repository),
+                reading_count=_reading_count(context.telemetry_repository),
             )
         )
         print(f"\nDesktop shell could not open: {exc}")
+
+
+def _station_count(repository: object) -> int:
+    station_count = getattr(repository, "station_count", None)
+    if isinstance(station_count, int):
+        return station_count
+    if hasattr(repository, "list_stations"):
+        return len(repository.list_stations())
+    raise TypeError("station repository does not expose a station count")
+
+
+def _reading_count(repository: object) -> int:
+    reading_count = getattr(repository, "reading_count", None)
+    if isinstance(reading_count, int):
+        return reading_count
+    if hasattr(repository, "list_readings"):
+        return len(repository.list_readings())
+    raise TypeError("telemetry repository does not expose a reading count")

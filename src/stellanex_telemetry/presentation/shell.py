@@ -4,8 +4,13 @@ import tkinter as tk
 from tkinter import ttk
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Sequence
 
 from stellanex_telemetry.application import (
+    DatasetDescriptor,
+    DatasetImportReport,
+    DatasetRuntime,
+    DatasetWorkspace,
     FleetHealthAggregator,
     FleetHealthSnapshot,
     OperatorInsightService,
@@ -53,6 +58,8 @@ from stellanex_telemetry.presentation.view_models import (
 @dataclass(frozen=True, slots=True)
 class DesktopShellContext:
     config: AppConfig
+    dataset_workspace: DatasetWorkspace
+    active_dataset_key: str
     station_repository: StationRepository
     telemetry_repository: TelemetryRepository
     alert_engine: ThresholdAlertPolicyEngine
@@ -70,32 +77,22 @@ class TelemetryDesktopShell(tk.Tk):
         self._context = context
         self._theme = theme or build_desktop_theme()
         self._theme.apply_window(self)
-        self._reference_time = _resolve_reference_time(context.telemetry_repository)
-        self._fleet_snapshot = context.health_aggregator.build_snapshot(
-            context.station_repository,
-            context.telemetry_repository,
-            generated_at=self._reference_time,
+        self._station_repository = context.station_repository
+        self._telemetry_repository = context.telemetry_repository
+        self._current_dataset_descriptor = _resolve_dataset_descriptor(
+            context.dataset_workspace.list_datasets(),
+            context.active_dataset_key,
         )
-        self._anomaly_alerts = context.anomaly_detector.evaluate_latest(
-            context.station_repository,
-            context.telemetry_repository,
-            generated_at=self._reference_time,
-        )
-        self._overview_view_model = build_fleet_overview_view_model(
-            self._fleet_snapshot,
-            anomaly_alerts=self._anomaly_alerts,
-        )
-        self._alert_inbox_view_model = build_alert_inbox_view_model(
-            self._fleet_snapshot,
-            anomaly_alerts=self._anomaly_alerts,
-        )
-        self._station_explorer_view_model = build_station_explorer_view_model(
-            self._fleet_snapshot,
-            anomaly_alerts=self._anomaly_alerts,
-        )
+        self._dataset_catalog = tuple(context.dataset_workspace.list_datasets())
+        self._last_import_report: DatasetImportReport | None = None
+        self._dataset_status_message = ""
+        self._dataset_selector_var = tk.StringVar(self, context.active_dataset_key)
+        self._dataset_status_var = tk.StringVar(self, "")
+        self._dataset_selector_updating = False
         self._section_hosts: dict[str, tk.Misc] = {}
         self._signal_canvas: tk.Canvas | None = None
         self._explorer_tree: ttk.Treeview | None = None
+        self._dataset_selector: ttk.Combobox | None = None
         self._explorer_preview_host: tk.Frame | None = None
         self._history_content_canvas: tk.Canvas | None = None
         self._history_content_frame: tk.Frame | None = None
@@ -103,23 +100,38 @@ class TelemetryDesktopShell(tk.Tk):
         self._history_dashboard_host: tk.Frame | None = None
         self._explorer_summary_label: tk.Label | None = None
         self._explorer_sort_label: tk.Label | None = None
-        self._explorer_rows_by_id: dict[str, StationExplorerRowViewModel] = {
-            row.station_id: row for row in self._station_explorer_view_model.rows
-        }
+        self._dataset_summary_label: tk.Label | None = None
+        self._dataset_runtime_label: tk.Label | None = None
+        self._dataset_actions_label: tk.Label | None = None
+        self._explorer_rows_by_id: dict[str, StationExplorerRowViewModel] = {}
         self._station_detail_cache: dict[str, StationDetailResult] = {}
         self._station_history_cache: dict[str, StationHistoryDashboardViewModel] = {}
         self._station_insight_cache: dict[str, StationInsightPanelViewModel] = {}
-        self._explorer_selected_station_id = (
-            self._station_explorer_view_model.rows[0].station_id
-            if self._station_explorer_view_model.rows
-            else None
-        )
+        self._explorer_selected_station_id: str | None = None
         self._explorer_sort_key = "priority"
         self._explorer_sort_descending = False
         self._explorer_search_var = tk.StringVar(self, "")
         self._explorer_region_var = tk.StringVar(self, "All regions")
         self._explorer_status_var = tk.StringVar(self, "All statuses")
         self._explorer_priority_only_var = tk.BooleanVar(self, False)
+        self._reference_time = datetime.now(timezone.utc)
+        self._fleet_snapshot = FleetHealthSnapshot(
+            generated_at=self._reference_time,
+            station_snapshots=(),
+            region_snapshots=(),
+            fleet_health_score=0.0,
+            active_alerts=(),
+            total_stations=0,
+            healthy_stations=0,
+            warning_stations=0,
+            critical_stations=0,
+            maintenance_stations=0,
+            offline_stations=0,
+        )
+        self._anomaly_alerts: tuple[object, ...] = ()
+        self._overview_view_model = build_fleet_overview_view_model(self._fleet_snapshot)
+        self._alert_inbox_view_model = build_alert_inbox_view_model(self._fleet_snapshot)
+        self._station_explorer_view_model = build_station_explorer_view_model(self._fleet_snapshot)
 
         self.title(context.config.app_name)
         self.geometry("1460x920")
@@ -127,6 +139,8 @@ class TelemetryDesktopShell(tk.Tk):
 
         self._configure_ttk_styles()
         self._bind_station_explorer_state()
+        self._bind_dataset_controls()
+        self._reload_runtime_models()
         self._build_shell()
         self.bind("<Configure>", self._on_resize)
 
@@ -202,6 +216,189 @@ class TelemetryDesktopShell(tk.Tk):
         self._explorer_status_var.trace_add("write", self._on_station_explorer_filters_changed)
         self._explorer_priority_only_var.trace_add("write", self._on_station_explorer_filters_changed)
 
+    def _bind_dataset_controls(self) -> None:
+        self._dataset_selector_var.trace_add("write", self._on_dataset_selection_changed)
+
+    def _on_dataset_selection_changed(self, *_: str) -> None:
+        if self._dataset_selector_updating:
+            return
+
+        selected_key = self._dataset_selector_var.get().strip()
+        if not selected_key:
+            return
+        if selected_key == self._current_dataset_descriptor.dataset_key:
+            return
+
+        try:
+            self._load_dataset_runtime(selected_key)
+        except (LookupError, RuntimeError) as exc:
+            self._dataset_status_message = f"Dataset switch failed: {exc}"
+            self._set_dataset_selector_value(self._current_dataset_descriptor.dataset_key)
+            self._update_dataset_status_labels()
+            return
+
+        self._rebuild_shell()
+
+    def _reload_runtime_models(self) -> None:
+        self._reference_time = _resolve_reference_time(self._telemetry_repository)
+        self._fleet_snapshot = self._context.health_aggregator.build_snapshot(
+            self._station_repository,
+            self._telemetry_repository,
+            generated_at=self._reference_time,
+        )
+        self._anomaly_alerts = self._context.anomaly_detector.evaluate_latest(
+            self._station_repository,
+            self._telemetry_repository,
+            generated_at=self._reference_time,
+        )
+        self._overview_view_model = build_fleet_overview_view_model(
+            self._fleet_snapshot,
+            anomaly_alerts=self._anomaly_alerts,
+        )
+        self._alert_inbox_view_model = build_alert_inbox_view_model(
+            self._fleet_snapshot,
+            anomaly_alerts=self._anomaly_alerts,
+        )
+        self._station_explorer_view_model = build_station_explorer_view_model(
+            self._fleet_snapshot,
+            anomaly_alerts=self._anomaly_alerts,
+        )
+        self._explorer_rows_by_id = {
+            row.station_id: row for row in self._station_explorer_view_model.rows
+        }
+        if (
+            self._explorer_selected_station_id is None
+            or self._explorer_selected_station_id not in self._explorer_rows_by_id
+        ):
+            self._explorer_selected_station_id = (
+                self._station_explorer_view_model.rows[0].station_id
+                if self._station_explorer_view_model.rows
+                else None
+            )
+        self._station_detail_cache.clear()
+        self._station_history_cache.clear()
+        self._station_insight_cache.clear()
+        self._update_dataset_status_labels()
+
+    def _refresh_dataset_catalog(self) -> None:
+        self._dataset_catalog = tuple(self._context.dataset_workspace.refresh_catalog())
+        self._current_dataset_descriptor = _resolve_dataset_descriptor(
+            self._dataset_catalog,
+            self._current_dataset_descriptor.dataset_key,
+        )
+        self._set_dataset_selector_value(self._current_dataset_descriptor.dataset_key)
+        self._update_dataset_status_labels()
+
+    def _load_dataset_runtime(
+        self,
+        dataset_key: str,
+        *,
+        status_message: str | None = None,
+    ) -> None:
+        runtime = self._context.dataset_workspace.load_dataset(dataset_key)
+        self._apply_dataset_runtime(runtime, status_message=status_message)
+
+    def _apply_dataset_runtime(
+        self,
+        runtime: DatasetRuntime,
+        *,
+        status_message: str | None = None,
+    ) -> None:
+        self._station_repository = runtime.station_repository
+        self._telemetry_repository = runtime.telemetry_repository
+        self._current_dataset_descriptor = runtime.descriptor
+        self._set_dataset_selector_value(runtime.descriptor.dataset_key)
+        self._dataset_status_message = (
+            status_message
+            or f"Loaded dataset '{runtime.descriptor.label}' with {_station_count(self._station_repository)} stations and {_reading_count(self._telemetry_repository)} readings."
+        )
+        self._reload_runtime_models()
+
+    def _set_dataset_selector_value(self, dataset_key: str) -> None:
+        if self._dataset_selector_var.get() == dataset_key:
+            return
+        self._dataset_selector_updating = True
+        try:
+            self._dataset_selector_var.set(dataset_key)
+        finally:
+            self._dataset_selector_updating = False
+
+    def _refresh_active_dataset(self) -> None:
+        current_descriptor = self._current_dataset_descriptor
+        self._refresh_dataset_catalog()
+        try:
+            self._load_dataset_runtime(
+                current_descriptor.dataset_key,
+                status_message=(
+                    f"Refreshed dataset '{self._current_dataset_descriptor.label}' from disk at "
+                    f"{self._reference_time.strftime('%d %b %Y %H:%M UTC')}."
+                ),
+            )
+        except (LookupError, RuntimeError) as exc:
+            self._dataset_status_message = f"Refresh failed: {exc}"
+            self._update_dataset_status_labels()
+            return
+        self._rebuild_shell()
+
+    def _import_staged_datasets(self) -> None:
+        try:
+            report = self._context.dataset_workspace.import_available()
+        except RuntimeError as exc:
+            self._dataset_status_message = f"Import failed: {exc}"
+            self._update_dataset_status_labels()
+            return
+
+        self._last_import_report = report
+        self._refresh_dataset_catalog()
+        self._dataset_status_message = _import_report_text(report)
+        self._update_dataset_status_labels()
+        self._rebuild_shell()
+
+    def _update_dataset_status_labels(self) -> None:
+        descriptor = self._current_dataset_descriptor
+        summary_text = (
+            f"{descriptor.label}\n"
+            f"{_station_count(self._station_repository)} stations | "
+            f"{_reading_count(self._telemetry_repository)} readings"
+        )
+        runtime_text = (
+            f"Origin: {descriptor.origin.upper()} | Catalog: {len(self._dataset_catalog)} datasets\n"
+            f"Updated: {_format_dataset_updated_at(descriptor)}"
+        )
+        action_text = self._dataset_status_message or _default_dataset_action_text(
+            descriptor,
+            imports_dir=self._context.config.paths.imports_dir,
+        )
+        self._dataset_status_var.set(action_text)
+
+        if self._dataset_selector is not None:
+            self._dataset_selector.configure(values=tuple(item.dataset_key for item in self._dataset_catalog))
+        if self._dataset_summary_label is not None:
+            self._dataset_summary_label.configure(text=summary_text)
+        if self._dataset_runtime_label is not None:
+            self._dataset_runtime_label.configure(text=runtime_text)
+        if self._dataset_actions_label is not None:
+            self._dataset_actions_label.configure(text=action_text)
+
+    def _rebuild_shell(self) -> None:
+        self._section_hosts = {}
+        self._signal_canvas = None
+        self._explorer_tree = None
+        self._dataset_selector = None
+        self._explorer_preview_host = None
+        self._history_content_canvas = None
+        self._history_content_frame = None
+        self._history_content_window_id = None
+        self._history_dashboard_host = None
+        self._explorer_summary_label = None
+        self._explorer_sort_label = None
+        self._dataset_summary_label = None
+        self._dataset_runtime_label = None
+        self._dataset_actions_label = None
+        for child in self.winfo_children():
+            child.destroy()
+        self._build_shell()
+
     def _build_shell(self) -> None:
         theme = self._theme
         spacing = theme.spacing
@@ -246,7 +443,16 @@ class TelemetryDesktopShell(tk.Tk):
 
         eyebrow_row = tk.Frame(left, bg=theme.palette.surface_dark)
         eyebrow_row.pack(anchor="w")
-        theme.pill(eyebrow_row, text="LIVE DEMO DATASET", tone="dark").pack(side="left", padx=(0, spacing.sm))
+        theme.pill(
+            eyebrow_row,
+            text=f"LIVE {self._current_dataset_descriptor.origin.upper()} DATASET",
+            tone="dark",
+        ).pack(side="left", padx=(0, spacing.sm))
+        theme.pill(
+            eyebrow_row,
+            text=f"CATALOG {len(self._dataset_catalog)} READY",
+            tone="accent",
+        ).pack(side="left", padx=(0, spacing.sm))
         theme.pill(eyebrow_row, text=f"REFERENCE {self._reference_time.strftime('%d %b %Y %H:%M UTC')}", tone="signal").pack(side="left")
 
         theme.label(
@@ -267,11 +473,22 @@ class TelemetryDesktopShell(tk.Tk):
             background=theme.palette.surface_dark,
             wraplength=620,
         ).pack(anchor="w")
+        theme.label(
+            left,
+            text=(
+                f"Active dataset: {self._current_dataset_descriptor.label} | "
+                f"{self._current_dataset_descriptor.description}"
+            ),
+            role="body_strong",
+            tone="signal",
+            background=theme.palette.surface_dark,
+            wraplength=620,
+        ).pack(anchor="w", pady=(spacing.sm, 0))
 
         stats = tk.Frame(left, bg=theme.palette.surface_dark)
         stats.pack(anchor="w", pady=(spacing.md, 0))
-        self._build_stat_chip(stats, "Stations", str(_station_count(self._context.station_repository)))
-        self._build_stat_chip(stats, "Telemetry", str(_reading_count(self._context.telemetry_repository)))
+        self._build_stat_chip(stats, "Stations", str(_station_count(self._station_repository)))
+        self._build_stat_chip(stats, "Telemetry", str(_reading_count(self._telemetry_repository)))
         self._build_stat_chip(stats, "Fleet Score", f"{self._fleet_snapshot.fleet_health_score:.2f}")
         self._build_stat_chip(stats, "Attention", str(self._fleet_snapshot.warning_stations + self._fleet_snapshot.critical_stations))
 
@@ -338,11 +555,87 @@ class TelemetryDesktopShell(tk.Tk):
         card_body.pack(fill="both", expand=True, padx=spacing.md, pady=spacing.md)
         theme.label(
             card_body,
-            text="Dataset Wiring",
+            text="Dataset Control",
             role="card_title",
             tone="primary",
             background=theme.palette.surface,
         ).pack(anchor="w")
+        self._dataset_summary_label = theme.label(
+            card_body,
+            text="",
+            role="body_strong",
+            tone="primary",
+            background=theme.palette.surface,
+            wraplength=180,
+        )
+        self._dataset_summary_label.pack(anchor="w", pady=(spacing.sm, 0))
+        self._dataset_runtime_label = theme.label(
+            card_body,
+            text="",
+            role="caption",
+            tone="muted",
+            background=theme.palette.surface,
+            wraplength=180,
+        )
+        self._dataset_runtime_label.pack(anchor="w", pady=(spacing.xs, 0))
+        selector_shell = tk.Frame(card_body, bg=theme.palette.surface)
+        selector_shell.pack(fill="x", pady=(spacing.md, 0))
+        theme.label(
+            selector_shell,
+            text="Catalog Key",
+            role="caption",
+            tone="muted",
+            background=theme.palette.surface,
+        ).pack(anchor="w", pady=(0, spacing.xs))
+        self._dataset_selector = ttk.Combobox(
+            selector_shell,
+            textvariable=self._dataset_selector_var,
+            values=tuple(item.dataset_key for item in self._dataset_catalog),
+            state="readonly",
+            style="Telemetry.TCombobox",
+        )
+        self._dataset_selector.pack(fill="x")
+        action_row = tk.Frame(card_body, bg=theme.palette.surface)
+        action_row.pack(fill="x", pady=(spacing.md, 0))
+        tk.Button(
+            action_row,
+            text="Refresh Active",
+            command=self._refresh_active_dataset,
+            font=theme.typography.body_strong,
+            fg=theme.palette.text_primary,
+            bg=theme.palette.accent_soft,
+            activeforeground=theme.palette.text_primary,
+            activebackground=theme.palette.accent,
+            relief="flat",
+            bd=0,
+            padx=spacing.sm,
+            pady=spacing.sm,
+            cursor="arrow",
+        ).pack(side="left", padx=(0, spacing.xs))
+        tk.Button(
+            action_row,
+            text="Import Staged",
+            command=self._import_staged_datasets,
+            font=theme.typography.body_strong,
+            fg=theme.palette.text_on_dark,
+            bg=theme.palette.surface_dark,
+            activeforeground=theme.palette.text_on_dark,
+            activebackground=theme.palette.accent,
+            relief="flat",
+            bd=0,
+            padx=spacing.sm,
+            pady=spacing.sm,
+            cursor="arrow",
+        ).pack(side="left")
+        self._dataset_actions_label = theme.label(
+            card_body,
+            text="",
+            role="caption",
+            tone="muted",
+            background=theme.palette.surface,
+            wraplength=180,
+        )
+        self._dataset_actions_label.pack(anchor="w", pady=(spacing.md, 0))
         theme.label(
             card_body,
             text=f"Demo path: {self._context.config.paths.demo_data_dir}",
@@ -359,11 +652,20 @@ class TelemetryDesktopShell(tk.Tk):
             background=theme.palette.surface,
             wraplength=180,
         ).pack(anchor="w", pady=(spacing.xs, 0))
+        theme.label(
+            card_body,
+            text=f"Imports path: {self._context.config.paths.imports_dir}",
+            role="caption",
+            tone="muted",
+            background=theme.palette.surface,
+            wraplength=180,
+        ).pack(anchor="w", pady=(spacing.xs, 0))
+        self._update_dataset_status_labels()
 
         theme.divider(content).pack(fill="x", pady=spacing.md)
         theme.label(
             content,
-            text="Live modules: overview, alert inbox, station explorer, and trend charts. Next build order: narrative insights.",
+            text="Live modules: overview, alert inbox, station explorer, trend charts, and dataset import controls.",
             role="body",
             tone="muted",
             background=theme.palette.surface_alt,
@@ -1562,8 +1864,8 @@ class TelemetryDesktopShell(tk.Tk):
             return cached
 
         detail = self._context.station_detail_service.get_station_detail(
-            self._context.station_repository,
-            self._context.telemetry_repository,
+            self._station_repository,
+            self._telemetry_repository,
             StationDetailQuery(station_id=station_id),
         )
         self._station_detail_cache[station_id] = detail
@@ -1923,6 +2225,19 @@ def launch_desktop_shell(context: DesktopShellContext) -> None:
     shell.mainloop()
 
 
+def _resolve_dataset_descriptor(
+    descriptors: Sequence[DatasetDescriptor],
+    dataset_key: str,
+) -> DatasetDescriptor:
+    available = tuple(descriptors)
+    if not available:
+        raise LookupError("No datasets are available to the desktop shell.")
+    for descriptor in available:
+        if descriptor.dataset_key == dataset_key:
+            return descriptor
+    return available[0]
+
+
 def _resolve_reference_time(telemetry_repository: TelemetryRepository) -> datetime:
     latest = telemetry_repository.list_readings(TelemetryQuery(newest_first=True, limit=1))
     if latest:
@@ -1942,6 +2257,50 @@ def _reading_count(telemetry_repository: TelemetryRepository) -> int:
     if isinstance(reading_count, int):
         return reading_count
     return len(telemetry_repository.list_readings())
+
+
+def _format_dataset_updated_at(descriptor: DatasetDescriptor) -> str:
+    if descriptor.updated_at is None:
+        return "Unknown"
+    return descriptor.updated_at.astimezone(timezone.utc).strftime("%d %b %Y %H:%M UTC")
+
+
+def _default_dataset_action_text(descriptor: DatasetDescriptor, *, imports_dir: object) -> str:
+    return (
+        f"{descriptor.label} is active. Use Refresh Active to reload it from disk, or drop a manifest "
+        f"or CSV pair into '{imports_dir}' and click Import Staged."
+    )
+
+
+def _import_report_text(report: DatasetImportReport) -> str:
+    if report.imported_count > 0:
+        imported_labels = ", ".join(item.label for item in report.imported_datasets[:2])
+        if report.imported_count > 2:
+            imported_labels = f"{imported_labels}, +{report.imported_count - 2} more"
+        issue_suffix = ""
+        if report.warning_count or report.error_count:
+            issue_suffix = (
+                f" Review {report.warning_count} warning(s) and {report.error_count} error(s) "
+                "in the import log."
+            )
+        return (
+            f"Imported {report.imported_count} dataset(s) from {report.discovered_sources} staged source(s): "
+            f"{imported_labels}. Select a dataset key above to load it.{issue_suffix}"
+        )
+    if report.error_count > 0:
+        return (
+            f"Import scan found {report.error_count} error(s) across {report.discovered_sources} staged source(s). "
+            "No datasets were promoted into the runtime catalog."
+        )
+    if report.warning_count > 0:
+        return (
+            f"Import scan completed with {report.warning_count} warning(s) and no promoted datasets. "
+            "Check the staged files in the imports directory and try again."
+        )
+    return (
+        "No import-ready datasets were found. Stage a manifest or paired station/telemetry CSV files in the "
+        "imports directory, then click Import Staged again."
+    )
 
 
 def _command_post_text(snapshot: FleetHealthSnapshot, *, anomaly_count: int) -> str:

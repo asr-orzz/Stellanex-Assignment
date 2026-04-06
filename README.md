@@ -23,7 +23,7 @@ pip install -e .[dev]
 python -m stellanex_telemetry
 ```
 
-The application currently bootstraps its shared project paths and runtime folders before later commits add ingestion, analytics, anomaly detection, and the desktop UI.
+The desktop shell boots with the bundled demo dataset, supports refreshing the active dataset from disk, and can promote staged CSV imports from `data/imports/` into the runtime catalog without changing application code.
 
 ### Runtime Layout
 
@@ -50,6 +50,13 @@ The codebase is being structured as a layered Python application:
 - `presentation`: the desktop UI and view models that render the analyzed fleet state.
 
 This separation keeps business logic independent from the UI so the analytics layer can be tested headlessly and reused by a CLI or future API.
+
+## Current Operator Workflow
+
+1. Launch the desktop shell with `python -m stellanex_telemetry`.
+2. Review the live demo dataset in the fleet overview, alert inbox, station explorer, and trend insight deck.
+3. Stage new import-ready data under `data/imports/`, then use `Import Staged` from the shell's dataset control card.
+4. Switch the active dataset from the catalog selector and use `Refresh Active` when files on disk change.
 
 ## Delivery Strategy
 

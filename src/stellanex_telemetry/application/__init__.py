@@ -16,6 +16,12 @@ from stellanex_telemetry.application.contracts import (
     TelemetryQuery,
     TelemetryRepository,
 )
+from stellanex_telemetry.application.dataset_management import (
+    DatasetDescriptor,
+    DatasetImportReport,
+    DatasetRuntime,
+    DatasetWorkspace,
+)
 from stellanex_telemetry.application.fleet_health import (
     FleetHealthAggregator,
     FleetHealthScoringConfig,
@@ -41,6 +47,10 @@ from stellanex_telemetry.application.station_detail import (
 __all__ = [
     "AlertQuery",
     "AlertRepository",
+    "DatasetDescriptor",
+    "DatasetImportReport",
+    "DatasetRuntime",
+    "DatasetWorkspace",
     "FleetHealthAggregator",
     "FleetHealthScoringConfig",
     "FleetHealthSnapshot",
