@@ -68,6 +68,18 @@ For final usage and submission support, see:
 - `docs/operator-runbook.md` for the desktop, dataset, and CLI operating flow
 - `docs/submission-checklist.md` for the final repo and demo readiness checklist
 - `docs/walkthrough-guide.md` for a reviewer-friendly video walkthrough structure
+- `docs/final-handoff.md` for final GitHub push, PR, and submission steps
+
+## Reviewer Shortcuts
+
+If someone is reviewing the submission quickly, the fastest path is:
+
+1. Read this `README.md`
+2. Run `python -m stellanex_telemetry report --dataset demo --top-stations 3`
+3. Launch `python -m stellanex_telemetry`
+4. Inspect `NG-006` and `SG-005` in the explorer
+5. Review `docs/architecture.md`
+6. Check the latest GitHub Actions run and demo report artifact
 
 ## Current Operator Workflow
 
