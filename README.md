@@ -21,6 +21,7 @@ python -m venv .venv
 .venv\Scripts\activate
 pip install -e .[dev]
 python -m stellanex_telemetry
+pytest
 ```
 
 The package now exposes both the desktop shell and headless CLI workflows. Running `python -m stellanex_telemetry` still opens the desktop experience by default, while `validate` and `report` provide automation-friendly commands for ingestion checks and fleet summaries.
