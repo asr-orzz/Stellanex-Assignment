@@ -15,6 +15,13 @@ from stellanex_telemetry.application import (
 from stellanex_telemetry.application.contracts import StationRepository, TelemetryRepository
 from stellanex_telemetry.config import AppConfig
 from stellanex_telemetry.presentation.theme import DesktopTheme, build_desktop_theme
+from stellanex_telemetry.presentation.view_models import (
+    FleetKpiViewModel,
+    FleetOverviewViewModel,
+    PriorityStationViewModel,
+    RegionHealthViewModel,
+    build_fleet_overview_view_model,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,7 +49,16 @@ class TelemetryDesktopShell(tk.Tk):
             context.telemetry_repository,
             generated_at=self._reference_time,
         )
-        self._section_hosts: dict[str, tk.Frame] = {}
+        self._anomaly_alerts = context.anomaly_detector.evaluate_latest(
+            context.station_repository,
+            context.telemetry_repository,
+            generated_at=self._reference_time,
+        )
+        self._overview_view_model = build_fleet_overview_view_model(
+            self._fleet_snapshot,
+            anomaly_alerts=self._anomaly_alerts,
+        )
+        self._section_hosts: dict[str, tk.Misc] = {}
         self._signal_canvas: tk.Canvas | None = None
 
         self.title(context.config.app_name)
@@ -141,7 +157,7 @@ class TelemetryDesktopShell(tk.Tk):
         self._build_signal_summary(
             stat_stack,
             title="Command Post",
-            body="Desktop shell is now live and wired to the repositories. The next commits will fill these zones with KPIs, explorer controls, charts, and alert workflows.",
+            body=_command_post_text(self._fleet_snapshot, anomaly_count=len(self._anomaly_alerts)),
         )
 
         self._signal_canvas = tk.Canvas(signal_shell, height=92, highlightthickness=0, bd=0)
@@ -228,16 +244,7 @@ class TelemetryDesktopShell(tk.Tk):
         theme = self._theme
         spacing = theme.spacing
 
-        overview_host = self._create_placeholder_panel(
-            master,
-            title="Fleet Overview Workbench",
-            eyebrow="STAGE 1",
-            description=(
-                "The shell is already fed by live fleet health data. In the next commit this host will become "
-                "the KPI strip and critical-station summary deck."
-            ),
-            footnote=f"Current fleet score {self._fleet_snapshot.fleet_health_score:.2f} across {self._fleet_snapshot.total_stations} stations.",
-        )
+        overview_host = self._build_overview_panel(master)
         overview_host.grid(row=0, column=0, sticky="nsew", padx=(0, spacing.md), pady=(0, spacing.md))
         self._section_hosts["overview"] = overview_host
 
@@ -279,6 +286,61 @@ class TelemetryDesktopShell(tk.Tk):
         )
         insight_host.grid(row=1, column=1, sticky="nsew")
         self._section_hosts["insights"] = insight_host
+
+    def _build_overview_panel(self, master: tk.Misc) -> tk.Frame:
+        theme = self._theme
+        spacing = theme.spacing
+        view_model = self._overview_view_model
+
+        panel = theme.panel(master, tone="surface")
+        body = tk.Frame(panel, bg=theme.palette.surface)
+        body.pack(fill="both", expand=True, padx=spacing.lg, pady=spacing.lg)
+
+        header = tk.Frame(body, bg=theme.palette.surface)
+        header.pack(fill="x")
+        pills = tk.Frame(header, bg=theme.palette.surface)
+        pills.pack(anchor="w")
+        theme.pill(pills, text="STAGE 1 LIVE", tone="signal").pack(side="left", padx=(0, spacing.sm))
+        theme.pill(pills, text=f"REFERENCE {view_model.reference_time_text}", tone="accent").pack(side="left")
+        theme.label(
+            header,
+            text="Fleet Overview Workbench",
+            role="section_title",
+            tone="primary",
+            background=theme.palette.surface,
+        ).pack(anchor="w", pady=(spacing.sm, spacing.xs))
+        theme.label(
+            header,
+            text=view_model.summary_text,
+            role="body",
+            tone="muted",
+            background=theme.palette.surface,
+            wraplength=760,
+        ).pack(anchor="w")
+
+        theme.divider(body, tone="soft").pack(fill="x", pady=spacing.md)
+
+        kpi_grid = tk.Frame(body, bg=theme.palette.surface)
+        kpi_grid.pack(fill="x")
+        for index, card_view in enumerate(view_model.kpi_cards):
+            kpi_grid.grid_columnconfigure(index, weight=1)
+            card = self._build_overview_kpi_card(kpi_grid, card_view)
+            card.grid(row=0, column=index, sticky="nsew", padx=(0, spacing.sm if index < len(view_model.kpi_cards) - 1 else 0))
+
+        lower = tk.Frame(body, bg=theme.palette.surface)
+        lower.pack(fill="both", expand=True, pady=(spacing.md, 0))
+        lower.grid_columnconfigure(0, weight=2)
+        lower.grid_columnconfigure(1, weight=3)
+        lower.grid_rowconfigure(0, weight=1)
+
+        regions = theme.panel(lower, tone="surface_alt")
+        regions.grid(row=0, column=0, sticky="nsew", padx=(0, spacing.md))
+        self._build_region_digest(regions)
+
+        priority = theme.panel(lower, tone="surface_alt")
+        priority.grid(row=0, column=1, sticky="nsew")
+        self._build_priority_watchlist(priority)
+        return panel
 
     def _create_placeholder_panel(
         self,
@@ -371,6 +433,201 @@ class TelemetryDesktopShell(tk.Tk):
         if event.widget is self and self._signal_canvas is not None:
             self._theme.paint_signal_canvas(self._signal_canvas)
 
+    def _build_overview_kpi_card(self, master: tk.Misc, card_view: FleetKpiViewModel) -> tk.Frame:
+        theme = self._theme
+        spacing = theme.spacing
+
+        card = theme.panel(master, tone="surface_alt")
+        accent_rail = tk.Frame(card, bg=theme.tone_color(card_view.tone), width=6)
+        accent_rail.pack(side="left", fill="y")
+
+        body = tk.Frame(card, bg=theme.palette.surface_alt)
+        body.pack(fill="both", expand=True, padx=spacing.md, pady=spacing.md)
+        theme.label(
+            body,
+            text=card_view.label.upper(),
+            role="caption",
+            tone=card_view.tone,
+            background=theme.palette.surface_alt,
+        ).pack(anchor="w")
+        theme.label(
+            body,
+            text=card_view.value_text,
+            role="section_title",
+            tone="primary",
+            background=theme.palette.surface_alt,
+        ).pack(anchor="w", pady=(spacing.xs, spacing.xs))
+        theme.label(
+            body,
+            text=card_view.detail_text,
+            role="body",
+            tone="muted",
+            background=theme.palette.surface_alt,
+            wraplength=160,
+        ).pack(anchor="w")
+        return card
+
+    def _build_region_digest(self, master: tk.Misc) -> None:
+        theme = self._theme
+        spacing = theme.spacing
+
+        body = tk.Frame(master, bg=theme.palette.surface_alt)
+        body.pack(fill="both", expand=True, padx=spacing.md, pady=spacing.md)
+        theme.label(
+            body,
+            text="Regional Health",
+            role="card_title",
+            tone="primary",
+            background=theme.palette.surface_alt,
+        ).pack(anchor="w")
+        theme.label(
+            body,
+            text="Compare average scores and the current operating mix across every grid region.",
+            role="body",
+            tone="muted",
+            background=theme.palette.surface_alt,
+            wraplength=220,
+        ).pack(anchor="w", pady=(spacing.xs, spacing.md))
+
+        grid = tk.Frame(body, bg=theme.palette.surface_alt)
+        grid.pack(fill="both", expand=True)
+        for index, region_view in enumerate(self._overview_view_model.region_cards):
+            row = index // 2
+            column = index % 2
+            grid.grid_columnconfigure(column, weight=1)
+            grid.grid_rowconfigure(row, weight=1)
+            card = self._build_region_card(grid, region_view)
+            card.grid(
+                row=row,
+                column=column,
+                sticky="nsew",
+                padx=(0, spacing.sm if column == 0 else 0),
+                pady=(0, spacing.sm if row == 0 else 0),
+            )
+
+    def _build_region_card(self, master: tk.Misc, region_view: RegionHealthViewModel) -> tk.Frame:
+        theme = self._theme
+        spacing = theme.spacing
+
+        card = theme.panel(master, tone="surface")
+        body = tk.Frame(card, bg=theme.palette.surface)
+        body.pack(fill="both", expand=True, padx=spacing.md, pady=spacing.md)
+
+        header = tk.Frame(body, bg=theme.palette.surface)
+        header.pack(fill="x")
+        theme.pill(header, text=region_view.region_name.upper(), tone=region_view.tone).pack(side="left")
+        theme.label(
+            header,
+            text=region_view.health_score_text,
+            role="caption",
+            tone="muted",
+            background=theme.palette.surface,
+        ).pack(side="right")
+        theme.label(
+            body,
+            text=region_view.station_mix_text,
+            role="body_strong",
+            tone="primary",
+            background=theme.palette.surface,
+            wraplength=200,
+        ).pack(anchor="w", pady=(spacing.sm, spacing.xs))
+        theme.label(
+            body,
+            text=region_view.signal_text,
+            role="body",
+            tone="muted",
+            background=theme.palette.surface,
+            wraplength=200,
+        ).pack(anchor="w")
+        return card
+
+    def _build_priority_watchlist(self, master: tk.Misc) -> None:
+        theme = self._theme
+        spacing = theme.spacing
+
+        body = tk.Frame(master, bg=theme.palette.surface_alt)
+        body.pack(fill="both", expand=True, padx=spacing.md, pady=spacing.md)
+        theme.label(
+            body,
+            text="Priority Stations",
+            role="card_title",
+            tone="primary",
+            background=theme.palette.surface_alt,
+        ).pack(anchor="w")
+        theme.label(
+            body,
+            text="The fleet score ranks these sites first for operator review based on status, health score, and telemetry watch signals.",
+            role="body",
+            tone="muted",
+            background=theme.palette.surface_alt,
+            wraplength=420,
+        ).pack(anchor="w", pady=(spacing.xs, spacing.md))
+
+        for index, station_view in enumerate(self._overview_view_model.priority_cards):
+            card = self._build_priority_station_card(body, station_view)
+            card.pack(fill="x", pady=(0, spacing.sm if index < len(self._overview_view_model.priority_cards) - 1 else 0))
+
+    def _build_priority_station_card(self, master: tk.Misc, station_view: PriorityStationViewModel) -> tk.Frame:
+        theme = self._theme
+        spacing = theme.spacing
+
+        card = theme.panel(master, tone="surface")
+        accent_rail = tk.Frame(card, bg=theme.tone_color(station_view.badge_tone), width=5)
+        accent_rail.pack(side="left", fill="y")
+
+        body = tk.Frame(card, bg=theme.palette.surface)
+        body.pack(fill="both", expand=True, padx=spacing.md, pady=spacing.md)
+
+        top_row = tk.Frame(body, bg=theme.palette.surface)
+        top_row.pack(fill="x")
+        theme.pill(top_row, text=station_view.badge_text, tone=station_view.badge_tone).pack(side="left")
+        theme.label(
+            top_row,
+            text=station_view.health_score_text,
+            role="caption",
+            tone="muted",
+            background=theme.palette.surface,
+        ).pack(side="right")
+
+        theme.label(
+            body,
+            text=station_view.title,
+            role="card_title",
+            tone="primary",
+            background=theme.palette.surface,
+        ).pack(anchor="w", pady=(spacing.sm, 0))
+        theme.label(
+            body,
+            text=station_view.subtitle,
+            role="caption",
+            tone="muted",
+            background=theme.palette.surface,
+        ).pack(anchor="w", pady=(spacing.xs, spacing.sm))
+        theme.label(
+            body,
+            text=station_view.telemetry_text,
+            role="caption",
+            tone="signal",
+            background=theme.palette.surface,
+        ).pack(anchor="w")
+        theme.label(
+            body,
+            text=station_view.metric_text,
+            role="mono",
+            tone="primary",
+            background=theme.palette.surface,
+        ).pack(anchor="w", pady=(spacing.xs, spacing.sm))
+        theme.divider(body, tone="soft").pack(fill="x", pady=(0, spacing.sm))
+        theme.label(
+            body,
+            text=station_view.focus_text,
+            role="body",
+            tone="primary",
+            background=theme.palette.surface,
+            wraplength=420,
+        ).pack(anchor="w")
+        return card
+
 
 def create_desktop_shell(context: DesktopShellContext) -> TelemetryDesktopShell:
     return TelemetryDesktopShell(context)
@@ -409,4 +666,22 @@ def _priority_station_text(snapshot: FleetHealthSnapshot) -> str:
     return "Priority sequence: " + " | ".join(
         f"{station_snapshot.station.station_id} ({station_snapshot.derived_status.value}, {station_snapshot.health_score}/100)"
         for station_snapshot in top_stations
+    )
+
+
+def _command_post_text(snapshot: FleetHealthSnapshot, *, anomaly_count: int) -> str:
+    threshold_text = (
+        "No threshold breaches are active."
+        if snapshot.active_alert_count == 0
+        else f"{snapshot.active_alert_count} threshold breaches are active."
+    )
+    anomaly_text = (
+        "Telemetry watch is clear."
+        if anomaly_count == 0
+        else f"{anomaly_count} telemetry anomalies remain on the watchlist."
+    )
+    return (
+        f"Fleet score is {snapshot.fleet_health_score:.2f}/100 with "
+        f"{snapshot.warning_stations + snapshot.critical_stations} stations currently prioritized. "
+        f"{threshold_text} {anomaly_text}"
     )

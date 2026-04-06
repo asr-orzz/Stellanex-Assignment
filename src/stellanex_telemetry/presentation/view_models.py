@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
+from typing import Sequence
 
+from stellanex_telemetry.application import FleetHealthSnapshot, RegionHealthSnapshot, StationHealthSnapshot
 from stellanex_telemetry.application.station_detail import (
     StationAlertSummary,
     StationDetailResult,
     StationMetricSummary,
     StationTelemetryPoint,
 )
-from stellanex_telemetry.domain import AlertSeverity, StationStatus
+from stellanex_telemetry.domain import Alert, AlertSeverity, StationStatus
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +71,45 @@ class StationDetailViewModel:
     history_points: tuple[TelemetryPointViewModel, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class FleetKpiViewModel:
+    label: str
+    value_text: str
+    detail_text: str
+    tone: str
+
+
+@dataclass(frozen=True, slots=True)
+class RegionHealthViewModel:
+    region_name: str
+    health_score_text: str
+    station_mix_text: str
+    signal_text: str
+    tone: str
+
+
+@dataclass(frozen=True, slots=True)
+class PriorityStationViewModel:
+    station_id: str
+    title: str
+    subtitle: str
+    badge_text: str
+    badge_tone: str
+    health_score_text: str
+    telemetry_text: str
+    metric_text: str
+    focus_text: str
+
+
+@dataclass(frozen=True, slots=True)
+class FleetOverviewViewModel:
+    reference_time_text: str
+    summary_text: str
+    kpi_cards: tuple[FleetKpiViewModel, ...]
+    region_cards: tuple[RegionHealthViewModel, ...]
+    priority_cards: tuple[PriorityStationViewModel, ...]
+
+
 def build_station_detail_view_model(detail: StationDetailResult) -> StationDetailViewModel:
     station = detail.station
     primary_alert = detail.active_alerts[0] if detail.active_alerts else None
@@ -120,6 +162,67 @@ def build_station_detail_view_model(detail: StationDetailResult) -> StationDetai
         metric_cards=metric_cards,
         alert_items=alert_items,
         history_points=history_points,
+    )
+
+
+def build_fleet_overview_view_model(
+    snapshot: FleetHealthSnapshot,
+    *,
+    anomaly_alerts: Sequence[Alert] = (),
+    priority_limit: int = 4,
+) -> FleetOverviewViewModel:
+    if priority_limit <= 0:
+        raise ValueError("priority_limit must be greater than zero")
+
+    ordered_anomaly_alerts = tuple(sorted(anomaly_alerts, key=_alert_sort_key))
+    anomaly_lookup = _group_alerts_by_station(ordered_anomaly_alerts)
+
+    kpi_cards = (
+        FleetKpiViewModel(
+            label="Fleet Score",
+            value_text=f"{snapshot.fleet_health_score:.2f}/100",
+            detail_text=f"{snapshot.healthy_stations} healthy | {snapshot.critical_stations} critical",
+            tone=_fleet_score_tone(snapshot.fleet_health_score),
+        ),
+        FleetKpiViewModel(
+            label="Attention Sites",
+            value_text=str(snapshot.warning_stations + snapshot.critical_stations),
+            detail_text=f"{snapshot.warning_stations} warning | {snapshot.maintenance_stations} maintenance",
+            tone="warning" if snapshot.warning_stations or snapshot.critical_stations else "signal",
+        ),
+        FleetKpiViewModel(
+            label="Threshold Alerts",
+            value_text=str(snapshot.active_alert_count),
+            detail_text=(
+                "No envelope breaches at the current reference cut."
+                if snapshot.active_alert_count == 0
+                else f"{snapshot.active_alert_count} active threshold signals need review."
+            ),
+            tone="signal" if snapshot.active_alert_count == 0 else "critical",
+        ),
+        FleetKpiViewModel(
+            label="Telemetry Watch",
+            value_text=str(len(ordered_anomaly_alerts)),
+            detail_text=_telemetry_watch_text(ordered_anomaly_alerts),
+            tone="warning" if ordered_anomaly_alerts else "signal",
+        ),
+    )
+
+    region_cards = tuple(_build_region_view_model(region) for region in snapshot.region_snapshots)
+    priority_cards = tuple(
+        _build_priority_station_view_model(
+            station_snapshot,
+            anomaly_lookup.get(station_snapshot.station.station_id, ()),
+        )
+        for station_snapshot in snapshot.top_priority_stations(priority_limit)
+    )
+
+    return FleetOverviewViewModel(
+        reference_time_text=snapshot.generated_at.strftime("%d %b %Y %H:%M UTC"),
+        summary_text=_fleet_summary_text(snapshot, ordered_anomaly_alerts),
+        kpi_cards=kpi_cards,
+        region_cards=region_cards,
+        priority_cards=priority_cards,
     )
 
 
@@ -225,7 +328,7 @@ def _metric_tone(
         return "critical"
     if ratio >= 0.9:
         return "warning"
-    return "normal"
+    return "signal"
 
 
 def _severity_tone(severity: AlertSeverity) -> str:
@@ -233,16 +336,164 @@ def _severity_tone(severity: AlertSeverity) -> str:
         return "critical"
     if severity is AlertSeverity.WARNING:
         return "warning"
-    return "info"
+    return "accent"
 
 
 def _status_tone(status: StationStatus) -> str:
     tones = {
-        StationStatus.HEALTHY: "normal",
+        StationStatus.HEALTHY: "signal",
         StationStatus.WARNING: "warning",
         StationStatus.CRITICAL: "critical",
-        StationStatus.MAINTENANCE: "info",
+        StationStatus.MAINTENANCE: "accent",
         StationStatus.OFFLINE: "critical",
         StationStatus.UNKNOWN: "neutral",
     }
     return tones[status]
+
+
+def _build_region_view_model(region: RegionHealthSnapshot) -> RegionHealthViewModel:
+    attention_count = region.warning_stations + region.critical_stations + region.offline_stations
+    station_mix = (
+        f"{region.healthy_stations} healthy | "
+        f"{attention_count} attention | "
+        f"{region.maintenance_stations} maintenance"
+    )
+    signal_text = (
+        "No threshold alerts at the current cut."
+        if region.active_alert_count == 0
+        else f"{region.active_alert_count} threshold alerts are active."
+    )
+    return RegionHealthViewModel(
+        region_name=region.region,
+        health_score_text=f"Score {region.average_health_score:.2f}",
+        station_mix_text=station_mix,
+        signal_text=signal_text,
+        tone=_region_tone(region),
+    )
+
+
+def _build_priority_station_view_model(
+    station_snapshot: StationHealthSnapshot,
+    anomaly_alerts: Sequence[Alert],
+) -> PriorityStationViewModel:
+    station = station_snapshot.station
+    latest_reading = station_snapshot.latest_reading
+    if anomaly_alerts:
+        primary_signal = anomaly_alerts[0]
+        badge_text = f"ANOMALY WATCH | {len(anomaly_alerts)}"
+        badge_tone = _severity_tone(primary_signal.severity)
+        focus_text = primary_signal.message
+    elif station_snapshot.primary_alert is not None:
+        primary_signal = station_snapshot.primary_alert
+        badge_text = f"THRESHOLD ALERT | {len(station_snapshot.alerts)}"
+        badge_tone = _severity_tone(primary_signal.severity)
+        focus_text = primary_signal.message
+    else:
+        badge_text = "STATUS PRIORITY"
+        badge_tone = _status_tone(station_snapshot.derived_status)
+        focus_text = station_snapshot.status_reason
+
+    return PriorityStationViewModel(
+        station_id=station.station_id,
+        title=station.display_name,
+        subtitle=f"{station.region} | {station.capacity_mw:.1f} MW capacity",
+        badge_text=badge_text,
+        badge_tone=badge_tone,
+        health_score_text=f"Score {station_snapshot.health_score}/100",
+        telemetry_text=(
+            f"Latest {latest_reading.recorded_at.strftime('%d %b %H:%M UTC')}"
+            if latest_reading is not None
+            else "No telemetry available"
+        ),
+        metric_text=_priority_metric_text(station_snapshot),
+        focus_text=focus_text,
+    )
+
+
+def _fleet_summary_text(snapshot: FleetHealthSnapshot, anomaly_alerts: Sequence[Alert]) -> str:
+    attention_count = snapshot.warning_stations + snapshot.critical_stations
+    region_count = len(snapshot.region_snapshots)
+    lowest_region = min(
+        snapshot.region_snapshots,
+        key=lambda region: (region.average_health_score, region.region.casefold()),
+        default=None,
+    )
+    lowest_region_text = (
+        f"Lowest regional score is {lowest_region.region} at {lowest_region.average_health_score:.2f}."
+        if lowest_region is not None
+        else "Regional scoring will appear once stations are loaded."
+    )
+    telemetry_watch_text = (
+        f"{len(anomaly_alerts)} telemetry anomalies are still on the watchlist."
+        if anomaly_alerts
+        else "No anomaly signals are active at the current reference cut."
+    )
+    return (
+        f"{snapshot.healthy_stations} stations are operating normally while {attention_count} require operator attention "
+        f"across {region_count} regions. {lowest_region_text} {telemetry_watch_text}"
+    )
+
+
+def _telemetry_watch_text(anomaly_alerts: Sequence[Alert]) -> str:
+    if not anomaly_alerts:
+        return "No stale feeds, spikes, or drift signals detected."
+
+    category_counts: dict[str, int] = defaultdict(int)
+    for alert in anomaly_alerts:
+        metric_name = alert.metric_name or "system"
+        if "gap" in metric_name:
+            category_counts["stale"] += 1
+        elif metric_name == "temperature_c":
+            category_counts["drift"] += 1
+        else:
+            category_counts["spike"] += 1
+
+    fragments = [f"{count} {label}" for label, count in sorted(category_counts.items(), key=lambda item: item[0])]
+    return " | ".join(fragments)
+
+
+def _priority_metric_text(snapshot: StationHealthSnapshot) -> str:
+    reading = snapshot.latest_reading
+    if reading is None:
+        return "Telemetry unavailable"
+    return (
+        f"{reading.voltage_kv:.1f} kV | "
+        f"{reading.load_percent:.1f}% load | "
+        f"{reading.temperature_c:.1f} C"
+    )
+
+
+def _region_tone(region: RegionHealthSnapshot) -> str:
+    if region.critical_stations or region.offline_stations or region.active_alert_count:
+        return "critical"
+    if region.warning_stations:
+        return "warning"
+    if region.maintenance_stations:
+        return "accent"
+    return "signal"
+
+
+def _fleet_score_tone(score: float) -> str:
+    if score < 90:
+        return "critical"
+    if score < 97:
+        return "warning"
+    return "signal"
+
+
+def _group_alerts_by_station(alerts: Sequence[Alert]) -> dict[str, tuple[Alert, ...]]:
+    grouped: dict[str, list[Alert]] = defaultdict(list)
+    for alert in alerts:
+        grouped[alert.station_id].append(alert)
+    return {
+        station_id: tuple(sorted(station_alerts, key=_alert_sort_key))
+        for station_id, station_alerts in grouped.items()
+    }
+
+
+def _alert_sort_key(alert: Alert) -> tuple[int, float, str]:
+    return (
+        -alert.severity.rank,
+        -alert.triggered_at.timestamp(),
+        alert.alert_id,
+    )

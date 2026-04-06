@@ -84,6 +84,19 @@ class DesktopTheme:
             kwargs["wraplength"] = wraplength
         return tk.Label(master, **kwargs)
 
+    def tone_color(self, tone: str) -> str:
+        tones = {
+            "primary": self.palette.text_primary,
+            "muted": self.palette.text_muted,
+            "dark": self.palette.text_on_dark,
+            "accent": self.palette.accent,
+            "warning": self.palette.warning,
+            "critical": self.palette.critical,
+            "signal": self.palette.signal,
+            "neutral": self.palette.border,
+        }
+        return tones[tone]
+
     def pill(self, master: tk.Misc, *, text: str, tone: str = "accent") -> tk.Label:
         background, foreground = self._pill_colors(tone)
         return tk.Label(
@@ -179,6 +192,7 @@ class DesktopTheme:
             "warning": self.palette.warning,
             "critical": self.palette.critical,
             "signal": self.palette.signal,
+            "neutral": self.palette.text_muted,
         }
         return tones[tone]
 
