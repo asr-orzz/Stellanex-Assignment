@@ -1,0 +1,21 @@
+{
+  "dataset_name": "municipal-grid-demo",
+  "seed": 20260406,
+  "station_count": 24,
+  "reading_count": 4600,
+  "interval_minutes": 15,
+  "periods": 192,
+  "start_at": "2026-03-01T00:00:00Z",
+  "end_at": "2026-03-02T23:45:00Z",
+  "files": {
+    "stations": "stations.csv",
+    "telemetry": "telemetry_readings.csv"
+  },
+  "incident_notes": [
+    "NG-003 experiences a midday overload spike and elevated temperatures.",
+    "WG-002 emits degraded-quality telemetry during a communications disturbance.",
+    "SG-005 shows gradual thermal drift over the second day of the dataset.",
+    "EG-004 suffers a short voltage sag event with recovery.",
+    "NG-006 stops reporting during the final two hours to simulate stale telemetry."
+  ]
+}

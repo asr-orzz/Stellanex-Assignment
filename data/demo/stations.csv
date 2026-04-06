@@ -1,0 +1,25 @@
+station_id,name,region,status,capacity_mw,nominal_voltage_kv,min_voltage_kv,max_voltage_kv,max_load_percent,max_temperature_c,latitude,longitude,commissioned_on,tags
+NG-001,Yamuna Exchange,North Grid,healthy,90.0,132.0,124.1,139.9,92.0,84.0,28.6139,77.2090,2011-01-03,municipal|ng|urban
+NG-002,Noida Corridor,North Grid,healthy,108.0,132.0,124.1,139.9,94.0,84.0,28.7939,77.3690,2012-01-04,municipal|ng|renewable-feed|urban
+NG-003,Rohini Peak,North Grid,critical,126.0,132.0,124.1,139.9,96.0,84.0,28.9739,77.5290,2013-01-05,industrial|municipal|ng
+NG-004,Ghaziabad Ring,North Grid,healthy,144.0,132.0,124.1,139.9,92.0,84.0,29.1539,77.6890,2014-01-06,municipal|ng|urban
+NG-005,Sonepat Yard,North Grid,healthy,162.0,132.0,124.1,139.9,94.0,84.0,29.3339,77.8490,2015-01-07,municipal|ng|renewable-feed|urban
+NG-006,Panipat Industrial,North Grid,warning,180.0,132.0,124.1,139.9,96.0,84.0,29.5139,78.0090,2016-01-08,industrial|municipal|ng
+WG-001,Harbor Link,West Grid,healthy,102.0,220.0,206.8,233.2,92.0,85.0,19.0760,72.8777,2011-02-03,municipal|urban|wg
+WG-002,Mira Junction,West Grid,warning,120.0,220.0,206.8,233.2,94.0,85.0,19.2560,73.0377,2012-02-04,municipal|renewable-feed|urban|wg
+WG-003,Thane Core,West Grid,healthy,138.0,220.0,206.8,233.2,96.0,85.0,19.4360,73.1977,2013-02-05,industrial|municipal|wg
+WG-004,Navi Gateway,West Grid,healthy,156.0,220.0,206.8,233.2,92.0,85.0,19.6160,73.3577,2014-02-06,municipal|urban|wg
+WG-005,Turbhe Switchyard,West Grid,healthy,174.0,220.0,206.8,233.2,94.0,85.0,19.7960,73.5177,2015-02-07,municipal|renewable-feed|urban|wg
+WG-006,Kalyan Spur,West Grid,healthy,192.0,220.0,206.8,233.2,96.0,85.0,19.9760,73.6777,2016-02-08,industrial|municipal|wg
+SG-001,Whitefield Spine,South Grid,healthy,114.0,110.0,103.4,116.6,92.0,86.0,12.9716,77.5946,2011-03-03,municipal|sg|urban
+SG-002,Electronic City,South Grid,healthy,132.0,110.0,103.4,116.6,94.0,86.0,13.1516,77.7546,2012-03-04,municipal|renewable-feed|sg|urban
+SG-003,Peenya Works,South Grid,healthy,150.0,110.0,103.4,116.6,96.0,86.0,13.3316,77.9146,2013-03-05,industrial|municipal|sg
+SG-004,Hosur Road,South Grid,healthy,168.0,110.0,103.4,116.6,92.0,86.0,13.5116,78.0746,2014-03-06,municipal|sg|urban
+SG-005,Mysore Link,South Grid,warning,186.0,110.0,103.4,116.6,94.0,86.0,13.6916,78.2346,2015-03-07,municipal|renewable-feed|sg|urban
+SG-006,Tumakuru Edge,South Grid,maintenance,204.0,110.0,103.4,116.6,96.0,86.0,13.8716,78.3946,2016-03-08,industrial|maintenance-window|municipal|sg
+EG-001,Howrah North,East Grid,healthy,126.0,66.0,62.0,70.0,92.0,87.0,22.5726,88.3639,2011-04-03,eg|municipal|urban
+EG-002,Salt Lake Central,East Grid,healthy,144.0,66.0,62.0,70.0,94.0,87.0,22.7526,88.5239,2012-04-04,eg|municipal|renewable-feed|urban
+EG-003,Dum Dum Feed,East Grid,healthy,162.0,66.0,62.0,70.0,96.0,87.0,22.9326,88.6839,2013-04-05,eg|industrial|municipal
+EG-004,Kalyani Spur,East Grid,warning,180.0,66.0,62.0,70.0,92.0,87.0,23.1126,88.8439,2014-04-06,eg|municipal|urban
+EG-005,Haldia Port,East Grid,healthy,198.0,66.0,62.0,70.0,94.0,87.0,23.2926,89.0039,2015-04-07,eg|municipal|renewable-feed|urban
+EG-006,Durgapur Metal Park,East Grid,healthy,216.0,66.0,62.0,70.0,96.0,87.0,23.4726,89.1639,2016-04-08,eg|industrial|municipal
