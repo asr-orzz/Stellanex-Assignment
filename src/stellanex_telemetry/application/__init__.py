@@ -15,15 +15,27 @@ from stellanex_telemetry.application.contracts import (
     TelemetryQuery,
     TelemetryRepository,
 )
+from stellanex_telemetry.application.fleet_health import (
+    FleetHealthAggregator,
+    FleetHealthScoringConfig,
+    FleetHealthSnapshot,
+    RegionHealthSnapshot,
+    StationHealthSnapshot,
+)
 
 __all__ = [
     "AlertQuery",
     "AlertRepository",
+    "FleetHealthAggregator",
+    "FleetHealthScoringConfig",
+    "FleetHealthSnapshot",
     "IngestionBatch",
     "IngestionIssue",
     "IngestionSummary",
+    "RegionHealthSnapshot",
     "StationQuery",
     "StationRepository",
+    "StationHealthSnapshot",
     "ThresholdAlertPolicyConfig",
     "ThresholdAlertPolicyEngine",
     "TelemetryBatchParser",
