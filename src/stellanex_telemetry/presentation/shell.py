@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from stellanex_telemetry.application import (
     FleetHealthAggregator,
     FleetHealthSnapshot,
+    StationDetailQuery,
     StationDetailQueryService,
     TelemetryQuery,
     ThresholdAlertPolicyEngine,
@@ -15,6 +16,11 @@ from stellanex_telemetry.application import (
 )
 from stellanex_telemetry.application.contracts import StationRepository, TelemetryRepository
 from stellanex_telemetry.config import AppConfig
+from stellanex_telemetry.presentation.history_charts import (
+    MetricHistoryChartViewModel,
+    StationHistoryDashboardViewModel,
+    build_station_history_dashboard_view_model,
+)
 from stellanex_telemetry.presentation.station_explorer import (
     StationExplorerRowViewModel,
     build_station_explorer_view_model,
@@ -73,11 +79,13 @@ class TelemetryDesktopShell(tk.Tk):
         self._signal_canvas: tk.Canvas | None = None
         self._explorer_tree: ttk.Treeview | None = None
         self._explorer_preview_host: tk.Frame | None = None
+        self._history_dashboard_host: tk.Frame | None = None
         self._explorer_summary_label: tk.Label | None = None
         self._explorer_sort_label: tk.Label | None = None
         self._explorer_rows_by_id: dict[str, StationExplorerRowViewModel] = {
             row.station_id: row for row in self._station_explorer_view_model.rows
         }
+        self._station_history_cache: dict[str, StationHistoryDashboardViewModel] = {}
         self._explorer_selected_station_id = (
             self._station_explorer_view_model.rows[0].station_id
             if self._station_explorer_view_model.rows
@@ -332,7 +340,7 @@ class TelemetryDesktopShell(tk.Tk):
         theme.divider(content).pack(fill="x", pady=spacing.md)
         theme.label(
             content,
-            text="Live modules: overview and station explorer. Next build order: charts, alert stream, then narrative insights.",
+            text="Live modules: overview, station explorer, and trend charts. Next build order: alert stream, then narrative insights.",
             role="body",
             tone="muted",
             background=theme.palette.surface_alt,
@@ -350,7 +358,7 @@ class TelemetryDesktopShell(tk.Tk):
         inbox_host = self._create_placeholder_panel(
             master,
             title="Signal Inbox",
-            eyebrow="STAGE 3",
+            eyebrow="STAGE 4",
             description=(
                 "This rail is reserved for active alerts and operator context. Right now it mirrors which "
                 "stations would be surfaced first once the alert widgets land."
@@ -364,16 +372,7 @@ class TelemetryDesktopShell(tk.Tk):
         explorer_host.grid(row=1, column=0, sticky="nsew", padx=(0, spacing.md))
         self._section_hosts["explorer"] = explorer_host
 
-        insight_host = self._create_placeholder_panel(
-            master,
-            title="Insight Narrative Deck",
-            eyebrow="STAGE 4",
-            description=(
-                "Historical charts, operator recommendations, and natural-language diagnostic notes will land "
-                "here after the shell, overview, and explorer commits are in place."
-            ),
-            footnote="Reserved for commits 16 through 18: charts, alert context, and operator insights.",
-        )
+        insight_host = self._build_history_dashboard_panel(master)
         insight_host.grid(row=1, column=1, sticky="nsew")
         self._section_hosts["insights"] = insight_host
 
@@ -537,6 +536,336 @@ class TelemetryDesktopShell(tk.Tk):
 
         self._refresh_station_explorer()
         return panel
+
+    def _build_history_dashboard_panel(self, master: tk.Misc) -> tk.Frame:
+        theme = self._theme
+        spacing = theme.spacing
+
+        panel = theme.panel(master, tone="surface")
+        body = tk.Frame(panel, bg=theme.palette.surface)
+        body.pack(fill="both", expand=True, padx=spacing.lg, pady=spacing.lg)
+
+        header = tk.Frame(body, bg=theme.palette.surface)
+        header.pack(fill="x")
+        pills = tk.Frame(header, bg=theme.palette.surface)
+        pills.pack(anchor="w")
+        theme.pill(pills, text="STAGE 3 LIVE", tone="signal").pack(side="left", padx=(0, spacing.sm))
+        theme.pill(pills, text="SELECTED STATION HISTORY", tone="accent").pack(side="left")
+        theme.label(
+            header,
+            text="Trend Signal Deck",
+            role="section_title",
+            tone="primary",
+            background=theme.palette.surface,
+        ).pack(anchor="w", pady=(spacing.sm, spacing.xs))
+        theme.label(
+            header,
+            text=(
+                "The charts follow the station currently selected in the explorer, showing the last 48 telemetry points "
+                "for voltage, load, and temperature with configured operating bounds layered in."
+            ),
+            role="body",
+            tone="muted",
+            background=theme.palette.surface,
+            wraplength=420,
+        ).pack(anchor="w")
+
+        host_shell = theme.panel(body, tone="surface_alt")
+        host_shell.pack(fill="both", expand=True, pady=(spacing.md, 0))
+        self._history_dashboard_host = tk.Frame(host_shell, bg=theme.palette.surface_alt)
+        self._history_dashboard_host.pack(fill="both", expand=True, padx=spacing.md, pady=spacing.md)
+
+        self._render_history_dashboard(self._resolve_selected_history_dashboard())
+        return panel
+
+    def _render_history_dashboard(self, dashboard: StationHistoryDashboardViewModel | None) -> None:
+        if self._history_dashboard_host is None:
+            return
+
+        theme = self._theme
+        spacing = theme.spacing
+        for child in self._history_dashboard_host.winfo_children():
+            child.destroy()
+
+        if dashboard is None:
+            theme.label(
+                self._history_dashboard_host,
+                text="Trend Signal Deck",
+                role="card_title",
+                tone="primary",
+                background=theme.palette.surface_alt,
+            ).pack(anchor="w")
+            theme.label(
+                self._history_dashboard_host,
+                text="Select a station in the explorer to render its recent voltage, load, and temperature history.",
+                role="body",
+                tone="muted",
+                background=theme.palette.surface_alt,
+                wraplength=420,
+            ).pack(anchor="w", pady=(spacing.xs, 0))
+            return
+
+        header = tk.Frame(self._history_dashboard_host, bg=theme.palette.surface_alt)
+        header.pack(fill="x")
+        theme.pill(header, text=dashboard.status_label.upper(), tone=dashboard.status_tone).pack(side="left", padx=(0, spacing.sm))
+        theme.pill(header, text=dashboard.active_signal_text.upper(), tone=_history_signal_tone(dashboard)).pack(side="left")
+        theme.label(
+            header,
+            text=dashboard.health_score_text,
+            role="caption",
+            tone="muted",
+            background=theme.palette.surface_alt,
+        ).pack(side="right")
+
+        theme.label(
+            self._history_dashboard_host,
+            text=dashboard.title,
+            role="card_title",
+            tone="primary",
+            background=theme.palette.surface_alt,
+        ).pack(anchor="w", pady=(spacing.sm, 0))
+        theme.label(
+            self._history_dashboard_host,
+            text=f"{dashboard.subtitle} | Last updated {dashboard.last_updated_text}",
+            role="body",
+            tone="muted",
+            background=theme.palette.surface_alt,
+            wraplength=420,
+        ).pack(anchor="w", pady=(spacing.xs, spacing.sm))
+        theme.label(
+            self._history_dashboard_host,
+            text=dashboard.status_reason,
+            role="body_strong",
+            tone="primary",
+            background=theme.palette.surface_alt,
+            wraplength=420,
+        ).pack(anchor="w")
+        theme.label(
+            self._history_dashboard_host,
+            text=dashboard.history_window_text,
+            role="caption",
+            tone="muted",
+            background=theme.palette.surface_alt,
+            wraplength=420,
+        ).pack(anchor="w", pady=(spacing.xs, spacing.md))
+
+        for index, chart_view in enumerate(dashboard.charts):
+            card = self._build_history_chart_card(self._history_dashboard_host, chart_view)
+            card.pack(fill="x", pady=(0, spacing.sm if index < len(dashboard.charts) - 1 else 0))
+
+    def _build_history_chart_card(self, master: tk.Misc, chart_view: MetricHistoryChartViewModel) -> tk.Frame:
+        theme = self._theme
+        spacing = theme.spacing
+
+        card = theme.panel(master, tone="surface")
+        accent_rail = tk.Frame(card, bg=theme.tone_color(chart_view.tone), width=5)
+        accent_rail.pack(side="left", fill="y")
+
+        body = tk.Frame(card, bg=theme.palette.surface)
+        body.pack(fill="both", expand=True, padx=spacing.md, pady=spacing.md)
+
+        top_row = tk.Frame(body, bg=theme.palette.surface)
+        top_row.pack(fill="x")
+        theme.pill(top_row, text=chart_view.label.upper(), tone=chart_view.tone).pack(side="left")
+        theme.label(
+            top_row,
+            text=chart_view.current_value_text,
+            role="body_strong",
+            tone="primary",
+            background=theme.palette.surface,
+        ).pack(side="right")
+
+        meta_row = tk.Frame(body, bg=theme.palette.surface)
+        meta_row.pack(fill="x", pady=(spacing.xs, spacing.sm))
+        theme.label(
+            meta_row,
+            text=f"Average {chart_view.average_value_text}",
+            role="caption",
+            tone="muted",
+            background=theme.palette.surface,
+        ).pack(side="left")
+        theme.label(
+            meta_row,
+            text=f"Delta {chart_view.delta_value_text}",
+            role="caption",
+            tone="muted",
+            background=theme.palette.surface,
+        ).pack(side="right")
+
+        canvas = tk.Canvas(
+            body,
+            height=106,
+            bg=theme.palette.surface,
+            highlightthickness=0,
+            bd=0,
+        )
+        canvas.pack(fill="x")
+        canvas.bind(
+            "<Configure>",
+            lambda _event, chart=chart_view, target=canvas: self._paint_history_chart(target, chart),
+        )
+        self._paint_history_chart(canvas, chart_view)
+
+        footer_row = tk.Frame(body, bg=theme.palette.surface)
+        footer_row.pack(fill="x", pady=(spacing.sm, 0))
+        left_footer = tk.Frame(footer_row, bg=theme.palette.surface)
+        left_footer.pack(side="left")
+        theme.label(
+            left_footer,
+            text=chart_view.range_value_text,
+            role="caption",
+            tone="primary",
+            background=theme.palette.surface,
+        ).pack(anchor="w")
+        theme.label(
+            left_footer,
+            text=chart_view.limit_text,
+            role="caption",
+            tone="muted",
+            background=theme.palette.surface,
+        ).pack(anchor="w", pady=(spacing.xs, 0))
+
+        right_footer = tk.Frame(footer_row, bg=theme.palette.surface)
+        right_footer.pack(side="right")
+        theme.label(
+            right_footer,
+            text=chart_view.window_text,
+            role="caption",
+            tone="muted",
+            background=theme.palette.surface,
+        ).pack(anchor="e")
+        theme.label(
+            right_footer,
+            text=f"Axis {chart_view.axis_min:.1f} -> {chart_view.axis_max:.1f}",
+            role="caption",
+            tone="muted",
+            background=theme.palette.surface,
+        ).pack(anchor="e", pady=(spacing.xs, 0))
+
+        return card
+
+    def _paint_history_chart(self, canvas: tk.Canvas, chart_view: MetricHistoryChartViewModel) -> None:
+        theme = self._theme
+        width = max(canvas.winfo_width(), 1)
+        height = max(canvas.winfo_height(), 1)
+        canvas.delete("history")
+        canvas.configure(bg=theme.palette.surface, highlightthickness=0, bd=0)
+
+        if not chart_view.points:
+            canvas.create_text(
+                width / 2,
+                height / 2,
+                text="No telemetry history",
+                fill=theme.palette.text_muted,
+                font=theme.typography.caption,
+                tags="history",
+            )
+            return
+
+        left = 14
+        right = width - 14
+        top = 12
+        bottom = height - 18
+
+        grid_color = theme.palette.border
+        for ratio in (0.0, 0.25, 0.5, 0.75, 1.0):
+            y = top + ((bottom - top) * ratio)
+            canvas.create_line(left, y, right, y, fill=grid_color, width=1, tags="history")
+
+        axis_min = chart_view.axis_min
+        axis_max = chart_view.axis_max
+        axis_span = axis_max - axis_min if axis_max != axis_min else 1.0
+
+        def to_y(value: float) -> float:
+            normalized = (value - axis_min) / axis_span
+            return bottom - (normalized * (bottom - top))
+
+        for bound, tone in ((chart_view.lower_bound, "warning"), (chart_view.upper_bound, "critical")):
+            if bound is None:
+                continue
+            y = to_y(bound)
+            dash_color = theme.tone_color(tone)
+            canvas.create_line(
+                left,
+                y,
+                right,
+                y,
+                fill=dash_color,
+                width=1,
+                dash=(4, 3),
+                tags="history",
+            )
+
+        point_count = len(chart_view.points)
+        x_step = (right - left) / max(point_count - 1, 1)
+        coordinates: list[float] = []
+        quality_marks: list[tuple[float, float, str]] = []
+        for index, point in enumerate(chart_view.points):
+            x = left + (index * x_step if point_count > 1 else (right - left) / 2)
+            y = to_y(point.value)
+            coordinates.extend((x, y))
+            if point.quality_label != "Ok":
+                quality_marks.append((x, y, point.quality_label))
+
+        line_color = theme.tone_color(chart_view.tone)
+        if len(coordinates) >= 4:
+            canvas.create_line(
+                *coordinates,
+                fill=line_color,
+                width=2,
+                smooth=True,
+                splinesteps=16,
+                tags="history",
+            )
+        else:
+            x, y = coordinates
+            canvas.create_oval(x - 3, y - 3, x + 3, y + 3, fill=line_color, outline="", tags="history")
+
+        for x, y, quality_label in quality_marks:
+            mark_tone = "warning" if quality_label in {"Degraded", "Estimated"} else "critical"
+            mark_color = theme.tone_color(mark_tone)
+            canvas.create_oval(x - 2, y - 2, x + 2, y + 2, fill=mark_color, outline="", tags="history")
+
+        last_x = coordinates[-2]
+        last_y = coordinates[-1]
+        canvas.create_oval(last_x - 4, last_y - 4, last_x + 4, last_y + 4, fill=line_color, outline="", tags="history")
+
+        canvas.create_text(
+            left,
+            top - 2,
+            text=f"{chart_view.axis_max:.1f}",
+            fill=theme.palette.text_muted,
+            font=theme.typography.caption,
+            anchor="sw",
+            tags="history",
+        )
+        canvas.create_text(
+            left,
+            bottom + 4,
+            text=f"{chart_view.axis_min:.1f}",
+            fill=theme.palette.text_muted,
+            font=theme.typography.caption,
+            anchor="nw",
+            tags="history",
+        )
+        canvas.create_text(
+            left + 52,
+            bottom + 4,
+            text=chart_view.points[0].timestamp_text,
+            fill=theme.palette.text_muted,
+            font=theme.typography.caption,
+            anchor="nw",
+            tags="history",
+        )
+        canvas.create_text(
+            right,
+            bottom + 4,
+            text=chart_view.points[-1].timestamp_text,
+            fill=theme.palette.text_muted,
+            font=theme.typography.caption,
+            anchor="ne",
+            tags="history",
+        )
 
     def _create_placeholder_panel(
         self,
@@ -794,11 +1123,7 @@ class TelemetryDesktopShell(tk.Tk):
                 )
             )
 
-        self._render_station_explorer_preview(
-            self._explorer_rows_by_id.get(self._explorer_selected_station_id)
-            if self._explorer_selected_station_id is not None
-            else None
-        )
+        self._refresh_station_context_panels()
 
     def _render_station_explorer_preview(self, row: StationExplorerRowViewModel | None) -> None:
         if self._explorer_preview_host is None:
@@ -912,11 +1237,7 @@ class TelemetryDesktopShell(tk.Tk):
             return
         selection = self._explorer_tree.selection()
         self._explorer_selected_station_id = selection[0] if selection else None
-        self._render_station_explorer_preview(
-            self._explorer_rows_by_id.get(self._explorer_selected_station_id)
-            if self._explorer_selected_station_id is not None
-            else None
-        )
+        self._refresh_station_context_panels()
 
     def _sort_station_explorer_by(self, sort_key: str) -> None:
         if self._explorer_sort_key == sort_key:
@@ -934,6 +1255,32 @@ class TelemetryDesktopShell(tk.Tk):
         self._explorer_sort_key = "priority"
         self._explorer_sort_descending = False
         self._refresh_station_explorer()
+
+    def _refresh_station_context_panels(self) -> None:
+        selected_row = (
+            self._explorer_rows_by_id.get(self._explorer_selected_station_id)
+            if self._explorer_selected_station_id is not None
+            else None
+        )
+        self._render_station_explorer_preview(selected_row)
+        self._render_history_dashboard(self._resolve_selected_history_dashboard())
+
+    def _resolve_selected_history_dashboard(self) -> StationHistoryDashboardViewModel | None:
+        if self._explorer_selected_station_id is None:
+            return None
+
+        cached = self._station_history_cache.get(self._explorer_selected_station_id)
+        if cached is not None:
+            return cached
+
+        detail = self._context.station_detail_service.get_station_detail(
+            self._context.station_repository,
+            self._context.telemetry_repository,
+            StationDetailQuery(station_id=self._explorer_selected_station_id),
+        )
+        dashboard = build_station_history_dashboard_view_model(detail)
+        self._station_history_cache[self._explorer_selected_station_id] = dashboard
+        return dashboard
 
     def _build_stat_chip(self, master: tk.Misc, label: str, value: str) -> None:
         theme = self._theme
@@ -1259,3 +1606,13 @@ def _signal_tone(row: StationExplorerRowViewModel) -> str:
     if row.is_priority:
         return row.status_tone
     return "signal"
+
+
+def _history_signal_tone(dashboard: StationHistoryDashboardViewModel) -> str:
+    if dashboard.active_signal_text == "Clear":
+        return "signal"
+    if "threshold" in dashboard.active_signal_text and "anomaly" in dashboard.active_signal_text:
+        return "critical"
+    if "threshold" in dashboard.active_signal_text:
+        return "warning"
+    return "accent"

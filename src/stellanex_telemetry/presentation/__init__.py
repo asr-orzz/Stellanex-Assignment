@@ -1,5 +1,11 @@
 """Presentation layer for desktop UI and future view models."""
 
+from stellanex_telemetry.presentation.history_charts import (
+    HistoryChartPointViewModel,
+    MetricHistoryChartViewModel,
+    StationHistoryDashboardViewModel,
+    build_station_history_dashboard_view_model,
+)
 from stellanex_telemetry.presentation.shell import (
     DesktopShellContext,
     TelemetryDesktopShell,
@@ -35,19 +41,23 @@ __all__ = [
     "DesktopTheme",
     "FleetKpiViewModel",
     "FleetOverviewViewModel",
+    "HistoryChartPointViewModel",
     "KeyValueRowViewModel",
+    "MetricHistoryChartViewModel",
     "MetricCardViewModel",
     "PriorityStationViewModel",
     "RegionHealthViewModel",
     "StationExplorerRowViewModel",
     "StationExplorerViewModel",
     "StationDetailViewModel",
+    "StationHistoryDashboardViewModel",
     "StationHeaderViewModel",
     "TelemetryDesktopShell",
     "TelemetryPointViewModel",
     "build_station_explorer_view_model",
     "build_desktop_theme",
     "build_fleet_overview_view_model",
+    "build_station_history_dashboard_view_model",
     "build_station_detail_view_model",
     "create_desktop_shell",
     "filter_station_explorer_rows",
