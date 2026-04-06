@@ -5,6 +5,7 @@ __pycache__/
 .ruff_cache/
 build/
 dist/
+.ci-runtime/
 *.egg-info/
 *.pyc
 *.pyo

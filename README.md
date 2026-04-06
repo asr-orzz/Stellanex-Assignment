@@ -72,6 +72,18 @@ python -m stellanex_telemetry report --source data/demo --top-stations 3
 
 The `validate` command returns a non-zero exit code when dataset errors are present, which makes it suitable for CI or submission-time checks. The `report` command emits a fleet summary in text or JSON without requiring a desktop session.
 
+## CI Workflow
+
+GitHub Actions now runs an automated CI pipeline on every push, on pull requests to `main`, and on manual dispatch:
+
+- installs the package on Python `3.10` and `3.12`
+- compiles the source tree
+- runs `pytest`
+- validates the bundled demo dataset with the CLI
+- generates and uploads a JSON demo fleet report artifact
+
+This keeps the submission reproducible and gives reviewers a headless verification path even when the desktop shell cannot be launched in CI.
+
 ## Delivery Strategy
 
 To satisfy the assessment's GitHub workflow requirement, implementation will be delivered as small conventional commits on a feature branch created from `main`. The plan is to grow the repository in atomic slices: bootstrap, domain modeling, ingestion, analytics, desktop UX, testing, and final documentation polish.
