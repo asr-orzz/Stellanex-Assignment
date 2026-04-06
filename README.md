@@ -52,6 +52,13 @@ The codebase is being structured as a layered Python application:
 
 This separation keeps business logic independent from the UI so the analytics layer can be tested headlessly and reused by a CLI or future API.
 
+## Architecture Docs
+
+For the deeper system design narrative, see:
+
+- `docs/architecture.md` for the layered architecture, runtime flows, and scalability posture
+- `docs/system-design-notes.md` for design decisions, trade-offs, and production evolution notes
+
 ## Current Operator Workflow
 
 1. Launch the desktop shell with `python -m stellanex_telemetry`.
