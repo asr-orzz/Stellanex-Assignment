@@ -23,7 +23,7 @@ pip install -e .[dev]
 python -m stellanex_telemetry
 ```
 
-The desktop shell boots with the bundled demo dataset, supports refreshing the active dataset from disk, and can promote staged CSV imports from `data/imports/` into the runtime catalog without changing application code.
+The package now exposes both the desktop shell and headless CLI workflows. Running `python -m stellanex_telemetry` still opens the desktop experience by default, while `validate` and `report` provide automation-friendly commands for ingestion checks and fleet summaries.
 
 ### Runtime Layout
 
@@ -57,6 +57,19 @@ This separation keeps business logic independent from the UI so the analytics la
 2. Review the live demo dataset in the fleet overview, alert inbox, station explorer, and trend insight deck.
 3. Stage new import-ready data under `data/imports/`, then use `Import Staged` from the shell's dataset control card.
 4. Switch the active dataset from the catalog selector and use `Refresh Active` when files on disk change.
+
+## CLI Workflows
+
+Use the same package for headless validation and report generation:
+
+```bash
+python -m stellanex_telemetry validate --dataset demo
+python -m stellanex_telemetry report --dataset demo --format json --output data/runtime/exports/demo_report.json
+python -m stellanex_telemetry validate --source data/imports/my_drop
+python -m stellanex_telemetry report --source data/demo --top-stations 3
+```
+
+The `validate` command returns a non-zero exit code when dataset errors are present, which makes it suitable for CI or submission-time checks. The `report` command emits a fleet summary in text or JSON without requiring a desktop session.
 
 ## Delivery Strategy
 
