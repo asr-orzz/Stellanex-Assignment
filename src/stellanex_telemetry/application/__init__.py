@@ -1,6 +1,7 @@
 """Application services and orchestration layer."""
 
 from stellanex_telemetry.application.alerting import ThresholdAlertPolicyConfig, ThresholdAlertPolicyEngine
+from stellanex_telemetry.application.anomaly_detection import TelemetryAnomalyConfig, TelemetryAnomalyDetector
 from stellanex_telemetry.application.contracts import (
     AlertQuery,
     AlertRepository,
@@ -36,6 +37,8 @@ __all__ = [
     "StationQuery",
     "StationRepository",
     "StationHealthSnapshot",
+    "TelemetryAnomalyConfig",
+    "TelemetryAnomalyDetector",
     "ThresholdAlertPolicyConfig",
     "ThresholdAlertPolicyEngine",
     "TelemetryBatchParser",
