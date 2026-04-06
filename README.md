@@ -2,6 +2,8 @@
 
 Add your final 2-5 minute walkthrough link here before submission.
 
+Prep notes for recording are available in `docs/walkthrough-guide.md`.
+
 # Stellanex Grid Telemetry Console
 
 An operator-focused desktop telemetry workbench for monitoring hundreds of municipal power sub-stations without manually combing through raw device logs.
@@ -58,6 +60,14 @@ For the deeper system design narrative, see:
 
 - `docs/architecture.md` for the layered architecture, runtime flows, and scalability posture
 - `docs/system-design-notes.md` for design decisions, trade-offs, and production evolution notes
+
+## Operations And Submission Docs
+
+For final usage and submission support, see:
+
+- `docs/operator-runbook.md` for the desktop, dataset, and CLI operating flow
+- `docs/submission-checklist.md` for the final repo and demo readiness checklist
+- `docs/walkthrough-guide.md` for a reviewer-friendly video walkthrough structure
 
 ## Current Operator Workflow
 
