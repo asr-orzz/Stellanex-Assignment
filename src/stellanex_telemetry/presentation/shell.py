@@ -16,6 +16,11 @@ from stellanex_telemetry.application import (
 )
 from stellanex_telemetry.application.contracts import StationRepository, TelemetryRepository
 from stellanex_telemetry.config import AppConfig
+from stellanex_telemetry.presentation.alert_inbox import (
+    AlertInboxItemViewModel,
+    AlertInboxSummaryViewModel,
+    build_alert_inbox_view_model,
+)
 from stellanex_telemetry.presentation.history_charts import (
     MetricHistoryChartViewModel,
     StationHistoryDashboardViewModel,
@@ -68,6 +73,10 @@ class TelemetryDesktopShell(tk.Tk):
             generated_at=self._reference_time,
         )
         self._overview_view_model = build_fleet_overview_view_model(
+            self._fleet_snapshot,
+            anomaly_alerts=self._anomaly_alerts,
+        )
+        self._alert_inbox_view_model = build_alert_inbox_view_model(
             self._fleet_snapshot,
             anomaly_alerts=self._anomaly_alerts,
         )
@@ -340,7 +349,7 @@ class TelemetryDesktopShell(tk.Tk):
         theme.divider(content).pack(fill="x", pady=spacing.md)
         theme.label(
             content,
-            text="Live modules: overview, station explorer, and trend charts. Next build order: alert stream, then narrative insights.",
+            text="Live modules: overview, alert inbox, station explorer, and trend charts. Next build order: narrative insights.",
             role="body",
             tone="muted",
             background=theme.palette.surface_alt,
@@ -355,16 +364,7 @@ class TelemetryDesktopShell(tk.Tk):
         overview_host.grid(row=0, column=0, sticky="nsew", padx=(0, spacing.md), pady=(0, spacing.md))
         self._section_hosts["overview"] = overview_host
 
-        inbox_host = self._create_placeholder_panel(
-            master,
-            title="Signal Inbox",
-            eyebrow="STAGE 4",
-            description=(
-                "This rail is reserved for active alerts and operator context. Right now it mirrors which "
-                "stations would be surfaced first once the alert widgets land."
-            ),
-            footnote=_priority_station_text(self._fleet_snapshot),
-        )
+        inbox_host = self._build_alert_inbox_panel(master)
         inbox_host.grid(row=0, column=1, sticky="nsew", pady=(0, spacing.md))
         self._section_hosts["alerts"] = inbox_host
 
@@ -429,6 +429,79 @@ class TelemetryDesktopShell(tk.Tk):
         priority = theme.panel(lower, tone="surface_alt")
         priority.grid(row=0, column=1, sticky="nsew")
         self._build_priority_watchlist(priority)
+        return panel
+
+    def _build_alert_inbox_panel(self, master: tk.Misc) -> tk.Frame:
+        theme = self._theme
+        spacing = theme.spacing
+        view_model = self._alert_inbox_view_model
+
+        panel = theme.panel(master, tone="surface")
+        body = tk.Frame(panel, bg=theme.palette.surface)
+        body.pack(fill="both", expand=True, padx=spacing.lg, pady=spacing.lg)
+
+        header = tk.Frame(body, bg=theme.palette.surface)
+        header.pack(fill="x")
+        pills = tk.Frame(header, bg=theme.palette.surface)
+        pills.pack(anchor="w")
+        theme.pill(pills, text="STAGE 4 LIVE", tone="signal").pack(side="left", padx=(0, spacing.sm))
+        theme.pill(pills, text="ACTIVE EVENT QUEUE", tone="accent").pack(side="left")
+        theme.label(
+            header,
+            text="Signal Inbox",
+            role="section_title",
+            tone="primary",
+            background=theme.palette.surface,
+        ).pack(anchor="w", pady=(spacing.sm, spacing.xs))
+        theme.label(
+            header,
+            text=view_model.summary_text,
+            role="body",
+            tone="muted",
+            background=theme.palette.surface,
+            wraplength=420,
+        ).pack(anchor="w")
+
+        theme.divider(body, tone="soft").pack(fill="x", pady=spacing.md)
+
+        summary_grid = tk.Frame(body, bg=theme.palette.surface)
+        summary_grid.pack(fill="x")
+        for index, card_view in enumerate(view_model.summary_cards):
+            summary_grid.grid_columnconfigure(index, weight=1)
+            card = self._build_alert_summary_card(summary_grid, card_view)
+            card.grid(
+                row=0,
+                column=index,
+                sticky="nsew",
+                padx=(0, spacing.sm if index < len(view_model.summary_cards) - 1 else 0),
+            )
+
+        list_shell = theme.panel(body, tone="surface_alt")
+        list_shell.pack(fill="both", expand=True, pady=(spacing.md, 0))
+        list_body = tk.Frame(list_shell, bg=theme.palette.surface_alt)
+        list_body.pack(fill="both", expand=True, padx=spacing.md, pady=spacing.md)
+
+        if not view_model.items:
+            theme.label(
+                list_body,
+                text=view_model.empty_title,
+                role="card_title",
+                tone="signal",
+                background=theme.palette.surface_alt,
+            ).pack(anchor="w")
+            theme.label(
+                list_body,
+                text=view_model.empty_body,
+                role="body",
+                tone="muted",
+                background=theme.palette.surface_alt,
+                wraplength=380,
+            ).pack(anchor="w", pady=(spacing.xs, 0))
+            return panel
+
+        for index, item_view in enumerate(view_model.items):
+            card = self._build_alert_inbox_item_card(list_body, item_view)
+            card.pack(fill="x", pady=(0, spacing.sm if index < len(view_model.items) - 1 else 0))
         return panel
 
     def _build_station_explorer_panel(self, master: tk.Misc) -> tk.Frame:
@@ -1399,6 +1472,110 @@ class TelemetryDesktopShell(tk.Tk):
                 pady=(0, spacing.sm if row == 0 else 0),
             )
 
+    def _build_alert_summary_card(self, master: tk.Misc, card_view: AlertInboxSummaryViewModel) -> tk.Frame:
+        theme = self._theme
+        spacing = theme.spacing
+
+        card = theme.panel(master, tone="surface_alt")
+        accent_rail = tk.Frame(card, bg=theme.tone_color(card_view.tone), width=6)
+        accent_rail.pack(side="left", fill="y")
+
+        body = tk.Frame(card, bg=theme.palette.surface_alt)
+        body.pack(fill="both", expand=True, padx=spacing.md, pady=spacing.md)
+        theme.label(
+            body,
+            text=card_view.label.upper(),
+            role="caption",
+            tone=card_view.tone,
+            background=theme.palette.surface_alt,
+        ).pack(anchor="w")
+        theme.label(
+            body,
+            text=card_view.value_text,
+            role="card_title",
+            tone="primary",
+            background=theme.palette.surface_alt,
+        ).pack(anchor="w", pady=(spacing.xs, spacing.xs))
+        theme.label(
+            body,
+            text=card_view.detail_text,
+            role="caption",
+            tone="muted",
+            background=theme.palette.surface_alt,
+            wraplength=120,
+        ).pack(anchor="w")
+        return card
+
+    def _build_alert_inbox_item_card(self, master: tk.Misc, item_view: AlertInboxItemViewModel) -> tk.Frame:
+        theme = self._theme
+        spacing = theme.spacing
+
+        card = theme.panel(master, tone="surface")
+        accent_rail = tk.Frame(card, bg=theme.tone_color(item_view.badge_tone), width=5)
+        accent_rail.pack(side="left", fill="y")
+
+        body = tk.Frame(card, bg=theme.palette.surface)
+        body.pack(fill="both", expand=True, padx=spacing.md, pady=spacing.md)
+
+        top_row = tk.Frame(body, bg=theme.palette.surface)
+        top_row.pack(fill="x")
+        theme.pill(top_row, text=item_view.badge_text, tone=item_view.badge_tone).pack(side="left", padx=(0, spacing.sm))
+        theme.pill(top_row, text=item_view.metric_text.upper(), tone="neutral").pack(side="left")
+        theme.label(
+            top_row,
+            text=item_view.timestamp_text,
+            role="caption",
+            tone="muted",
+            background=theme.palette.surface,
+        ).pack(side="right")
+
+        theme.label(
+            body,
+            text=item_view.station_title,
+            role="card_title",
+            tone="primary",
+            background=theme.palette.surface,
+        ).pack(anchor="w", pady=(spacing.sm, 0))
+        theme.label(
+            body,
+            text=item_view.station_subtitle,
+            role="caption",
+            tone="muted",
+            background=theme.palette.surface,
+        ).pack(anchor="w", pady=(spacing.xs, spacing.sm))
+
+        facts = tk.Frame(body, bg=theme.palette.surface)
+        facts.pack(fill="x")
+        self._build_preview_fact(facts, label="Source", value=item_view.source_text, tone=item_view.badge_tone).pack(side="left", padx=(0, spacing.lg))
+        self._build_preview_fact(facts, label="Status", value=item_view.status_text, tone=item_view.badge_tone).pack(side="left", padx=(0, spacing.lg))
+        self._build_preview_fact(facts, label="Health", value=item_view.health_score_text, tone="primary").pack(side="left")
+
+        theme.divider(body, tone="soft").pack(fill="x", pady=spacing.sm)
+        theme.label(
+            body,
+            text=item_view.context_text,
+            role="body",
+            tone="primary",
+            background=theme.palette.surface,
+            wraplength=390,
+        ).pack(anchor="w")
+        theme.label(
+            body,
+            text=item_view.observed_text,
+            role="caption",
+            tone="muted",
+            background=theme.palette.surface,
+        ).pack(anchor="w", pady=(spacing.sm, 0))
+        theme.label(
+            body,
+            text=f"Latest reading | {item_view.reading_text}",
+            role="mono",
+            tone="primary",
+            background=theme.palette.surface,
+            wraplength=390,
+        ).pack(anchor="w", pady=(spacing.xs, 0))
+        return card
+
     def _build_region_card(self, master: tk.Misc, region_view: RegionHealthViewModel) -> tk.Frame:
         theme = self._theme
         spacing = theme.spacing
@@ -1551,16 +1728,6 @@ def _reading_count(telemetry_repository: TelemetryRepository) -> int:
     if isinstance(reading_count, int):
         return reading_count
     return len(telemetry_repository.list_readings())
-
-
-def _priority_station_text(snapshot: FleetHealthSnapshot) -> str:
-    top_stations = snapshot.top_priority_stations(3)
-    if not top_stations:
-        return "No priority stations are available yet."
-    return "Priority sequence: " + " | ".join(
-        f"{station_snapshot.station.station_id} ({station_snapshot.derived_status.value}, {station_snapshot.health_score}/100)"
-        for station_snapshot in top_stations
-    )
 
 
 def _command_post_text(snapshot: FleetHealthSnapshot, *, anomaly_count: int) -> str:

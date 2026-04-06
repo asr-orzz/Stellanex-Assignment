@@ -1,5 +1,11 @@
 """Presentation layer for desktop UI and future view models."""
 
+from stellanex_telemetry.presentation.alert_inbox import (
+    AlertInboxItemViewModel,
+    AlertInboxSummaryViewModel,
+    AlertInboxViewModel,
+    build_alert_inbox_view_model,
+)
 from stellanex_telemetry.presentation.history_charts import (
     HistoryChartPointViewModel,
     MetricHistoryChartViewModel,
@@ -37,6 +43,9 @@ from stellanex_telemetry.presentation.view_models import (
 
 __all__ = [
     "AlertItemViewModel",
+    "AlertInboxItemViewModel",
+    "AlertInboxSummaryViewModel",
+    "AlertInboxViewModel",
     "DesktopShellContext",
     "DesktopTheme",
     "FleetKpiViewModel",
@@ -54,6 +63,7 @@ __all__ = [
     "StationHeaderViewModel",
     "TelemetryDesktopShell",
     "TelemetryPointViewModel",
+    "build_alert_inbox_view_model",
     "build_station_explorer_view_model",
     "build_desktop_theme",
     "build_fleet_overview_view_model",
