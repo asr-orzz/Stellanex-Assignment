@@ -1,122 +1,206 @@
-# Video Walkthrough
-
-Add your final 2-5 minute walkthrough link here before submission.
-
-Prep notes for recording are available in `docs/walkthrough-guide.md`.
-
 # Stellanex Grid Telemetry Console
 
-An operator-focused desktop telemetry workbench for monitoring hundreds of municipal power sub-stations without manually combing through raw device logs.
+An operator-first telemetry monitoring platform for electrical substations. The project ingests station metadata and time-series telemetry, evaluates fleet health, detects threshold breaches and anomalies, and presents the result through both a desktop control room UI and a headless CLI.
 
-## Problem Definition
+## What This Project Does
 
-The brief describes an engineering team that is overwhelmed by raw telemetry and lacks a shared operational view of station health. The MVP for this repository will focus on three user needs:
+- loads substation catalog data and telemetry readings from CSV datasets
+- validates ingestion inputs before they are used at runtime
+- computes fleet health scores and regional rollups
+- detects threshold-based issues such as voltage, load, temperature, and connectivity problems
+- detects bounded anomalies such as spikes, drift, and stale telemetry
+- provides a desktop shell for operations teams
+- provides CLI commands for validation and report generation
+- supports staged dataset imports and dataset switching without code changes
 
-1. Surface abnormal stations quickly instead of forcing engineers to inspect every raw log.
-2. Show telemetry trends in enough context to support diagnosis.
-3. Keep the codebase modular enough that ingestion rules, analytics, and the desktop interface can evolve independently.
+## Architecture
 
-## Setup
+The codebase follows a layered architecture so business logic stays reusable and testable.
 
-```bash
+- `domain`
+  core entities and invariants for substations, telemetry readings, alerts, and status semantics
+- `application`
+  orchestration services for alerting, anomaly detection, fleet health scoring, station detail assembly, reporting, and dataset management
+- `infrastructure`
+  CSV parsing, deterministic demo dataset generation, indexed repositories, and filesystem-backed dataset workspace operations
+- `presentation`
+  Tkinter desktop shell, UI view models, station explorer, alert inbox, trend charts, and insight panels
+
+This structure lets the desktop shell, CLI, and CI pipeline share the same analytics layer instead of maintaining separate implementations.
+
+For deeper design notes:
+
+- `docs/architecture.md`
+- `docs/system-design-notes.md`
+
+## Repository Layout
+
+```text
+src/stellanex_telemetry/
+  domain/          Core models and invariants
+  application/     Analytics and orchestration services
+  infrastructure/  Parsers, repositories, dataset workspace
+  presentation/    Desktop UI and view models
+
+data/
+  demo/            Bundled deterministic dataset
+  imports/         Staged import drop zone
+  runtime/         Generated runtime artifacts
+
+docs/              Architecture, runbook, and project notes
+tests/             Automated test suite
+```
+
+## Requirements
+
+- Python `3.10` or newer
+- Windows PowerShell is used in the examples below
+
+## How To Run Locally
+
+### 1. Create A Virtual Environment
+
+```powershell
 python -m venv .venv
-.venv\Scripts\activate
+.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
 pip install -e .[dev]
+```
+
+### 2. Launch The Desktop Application
+
+```powershell
 python -m stellanex_telemetry
-pytest
 ```
 
-The package now exposes both the desktop shell and headless CLI workflows. Running `python -m stellanex_telemetry` still opens the desktop experience by default, while `validate` and `report` provide automation-friendly commands for ingestion checks and fleet summaries.
+You can also use the console script:
 
-### Runtime Layout
-
-The application resolves paths from the repository root and uses the following layout:
-
-- `data/demo/`: deterministic bundled datasets for local development and demos.
-- `data/imports/`: operator-provided CSV drops that will be parsed by the ingestion layer.
-- `data/runtime/`: generated runtime artifacts such as exports, caches, and logs.
-
-You can override the defaults with environment variables when needed:
-
-```bash
-set STELLANEX_DATA_DIR=C:\path\to\data
-set STELLANEX_RUNTIME_DIR=C:\path\to\runtime
+```powershell
+stellanex-console desktop
 ```
 
-## Technical Architecture
+The desktop shell starts with the bundled demo dataset and shows:
 
-The codebase is being structured as a layered Python application:
+- fleet overview KPIs
+- regional health cards
+- priority station watchlist
+- active alerts inbox
+- station explorer with search, filter, and sorting
+- trend charts and operator insight recommendations
+- dataset selector with refresh and staged import support
 
-- `domain`: core entities and invariants for substations, telemetry readings, alerts, and fleet state.
-- `application`: orchestration and analytics services that transform raw telemetry into operator-facing insights.
-- `infrastructure`: file-backed ingestion, sample datasets, and future adapters for external sources.
-- `presentation`: the desktop UI and view models that render the analyzed fleet state.
+## CLI Commands
 
-This separation keeps business logic independent from the UI so the analytics layer can be tested headlessly and reused by a CLI or future API.
+### Validate A Dataset
 
-## Architecture Docs
+Validate the bundled demo dataset:
 
-For the deeper system design narrative, see:
-
-- `docs/architecture.md` for the layered architecture, runtime flows, and scalability posture
-- `docs/system-design-notes.md` for design decisions, trade-offs, and production evolution notes
-
-## Operations And Submission Docs
-
-For final usage and submission support, see:
-
-- `docs/operator-runbook.md` for the desktop, dataset, and CLI operating flow
-- `docs/submission-checklist.md` for the final repo and demo readiness checklist
-- `docs/walkthrough-guide.md` for a reviewer-friendly video walkthrough structure
-- `docs/final-handoff.md` for final GitHub push, PR, and submission steps
-
-## Reviewer Shortcuts
-
-If someone is reviewing the submission quickly, the fastest path is:
-
-1. Read this `README.md`
-2. Run `python -m stellanex_telemetry report --dataset demo --top-stations 3`
-3. Launch `python -m stellanex_telemetry`
-4. Inspect `NG-006` and `SG-005` in the explorer
-5. Review `docs/architecture.md`
-6. Check the latest GitHub Actions run and demo report artifact
-
-## Current Operator Workflow
-
-1. Launch the desktop shell with `python -m stellanex_telemetry`.
-2. Review the live demo dataset in the fleet overview, alert inbox, station explorer, and trend insight deck.
-3. Stage new import-ready data under `data/imports/`, then use `Import Staged` from the shell's dataset control card.
-4. Switch the active dataset from the catalog selector and use `Refresh Active` when files on disk change.
-
-## CLI Workflows
-
-Use the same package for headless validation and report generation:
-
-```bash
+```powershell
 python -m stellanex_telemetry validate --dataset demo
-python -m stellanex_telemetry report --dataset demo --format json --output data/runtime/exports/demo_report.json
-python -m stellanex_telemetry validate --source data/imports/my_drop
-python -m stellanex_telemetry report --source data/demo --top-stations 3
 ```
 
-The `validate` command returns a non-zero exit code when dataset errors are present, which makes it suitable for CI or submission-time checks. The `report` command emits a fleet summary in text or JSON without requiring a desktop session.
+Validate a dataset directly from a path:
 
-## CI Workflow
+```powershell
+python -m stellanex_telemetry validate --source data\demo
+```
 
-GitHub Actions now runs an automated CI pipeline on every push, on pull requests to `main`, and on manual dispatch:
+### Generate A Fleet Report
 
-- installs the package on Python `3.10` and `3.12`
-- compiles the source tree
-- runs `pytest`
-- validates the bundled demo dataset with the CLI
-- generates and uploads a JSON demo fleet report artifact
+Generate a text report:
 
-This keeps the submission reproducible and gives reviewers a headless verification path even when the desktop shell cannot be launched in CI.
+```powershell
+python -m stellanex_telemetry report --dataset demo --top-stations 3
+```
 
-## Delivery Strategy
+Generate a JSON report:
 
-To satisfy the assessment's GitHub workflow requirement, implementation will be delivered as small conventional commits on a feature branch created from `main`. The plan is to grow the repository in atomic slices: bootstrap, domain modeling, ingestion, analytics, desktop UX, testing, and final documentation polish.
+```powershell
+python -m stellanex_telemetry report --dataset demo --format json --output data\runtime\exports\demo_report.json
+```
 
-## Critical Reflection
+Run through the console script:
 
-The biggest product uncertainty at the outset is how much analytical sophistication is needed for the MVP. A simple threshold-driven alerting engine is easier to reason about and explain in an interview, while a richer anomaly detector may better capture subtle failures. The plan is to start with transparent rules and then layer in bounded anomaly detection so the trade-off remains explicit.
+```powershell
+stellanex-console report --dataset demo --top-stations 3
+```
+
+## Dataset Workflow
+
+The project uses three dataset locations:
+
+- `data/demo/`
+  bundled deterministic demo dataset committed to the repository
+- `data/imports/`
+  staging area for operator-provided dataset folders or CSV drops
+- `data/runtime/`
+  generated runtime workspace for imported datasets, exports, caches, and logs
+
+### Import A New Dataset
+
+1. Put a compatible dataset in `data/imports/`
+2. Launch the desktop app
+3. Use `Import Staged` from the dataset control card
+4. Select the new dataset from the catalog dropdown
+
+Supported import shapes include:
+
+- a dataset directory containing `manifest.json`, `stations.csv`, and `telemetry_readings.csv`
+- compatible CSV and manifest sources that the parser can resolve
+
+## Demo Dataset
+
+The bundled demo dataset is deterministic and intentionally includes realistic signals for demos and tests.
+
+- `24` substations
+- `4600` telemetry readings
+- `4` grid regions
+- seeded incidents including:
+  - `NG-006` stale telemetry
+  - `SG-005` sustained temperature drift
+  - `NG-003` metadata-driven critical state
+  - earlier overload and voltage sag patterns inside history windows
+
+## How To Test
+
+Run the full local verification flow:
+
+```powershell
+python -m compileall src
+pytest -q
+python -m stellanex_telemetry validate --dataset demo
+python -m stellanex_telemetry report --dataset demo --top-stations 3
+```
+
+Current automated coverage includes:
+
+- CSV ingestion validation
+- malformed dataset handling
+- deterministic fleet reporting on the demo dataset
+- CLI validation behavior
+- CLI JSON export behavior
+
+## CI
+
+GitHub Actions runs the following pipeline:
+
+- source compilation
+- automated tests
+- CLI validation of the demo dataset
+- generation of a JSON demo fleet report artifact
+
+Workflow file:
+
+- `.github/workflows/ci.yml`
+
+## Helpful Docs
+
+- `docs/operator-runbook.md`
+- `docs/architecture.md`
+- `docs/system-design-notes.md`
+- `docs/final-handoff.md`
+
+## Notes
+
+- If the desktop shell cannot open in your environment, you can still validate datasets and generate reports through the CLI.
+- Runtime-only folders such as `data/runtime/` and `.ci-runtime/` are intentionally ignored by Git.
